@@ -1,4 +1,4 @@
-"""Stream: real south-facing celestial sky + landscape walk."""
+"""Stream: real south-facing celestial sky + landscape walk + random features."""
 
 from __future__ import annotations
 
@@ -8,17 +8,18 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
-from domain.celestial import project_body, project_stars, south_facing_project
+from domain.celestial import project_stars, south_facing_project
 from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.procedural import grounded_walk, head_bob
 from domain.sky import celestial_at, scene_grade, sky_colors
 from domain.value_objects import Affine, CameraState, Viseme
-from domain.zones import LandscapeRoute, Overlay, generate_route
+from domain.zones import Feature, LandscapeRoute, Overlay, generate_route
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
 
 
@@ -117,31 +118,19 @@ class ContinuousWalkStream:
         return sky.convert("RGBA")
 
     def _draw_projected_stars(self, canvas: Image.Image, cel) -> Image.Image:
-        """Real star field projected looking south from Germany."""
-        # Fade in as it gets dark
         if cel.sun_alt_deg > 0:
             return canvas
         strength = min(1.0, max(0.0, (-cel.sun_alt_deg) / 10.0))
         if strength < 0.05:
             return canvas
-
-        stars = project_stars(
-            cel.local_time,
-            canvas.width,
-            canvas.height,
-            max_mag=2.5,
-        )
+        stars = project_stars(cel.local_time, canvas.width, canvas.height, max_mag=2.5)
         layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer)
         for s in stars:
-            # Size/brightness from magnitude
             bright = max(0.15, min(1.0, (2.5 - s.mag) / 3.5))
             r = max(1, int(1 + bright * 2.5))
             alpha = int(255 * strength * bright)
-            draw.ellipse(
-                [s.x - r, s.y - r, s.x + r, s.y + r],
-                fill=(255, 250, 240, alpha),
-            )
+            draw.ellipse([s.x - r, s.y - r, s.x + r, s.y + r], fill=(255, 250, 240, alpha))
         return Image.alpha_composite(canvas, layer)
 
     def _draw_sun(self, canvas: Image.Image, cel) -> Image.Image:
@@ -159,10 +148,7 @@ class ContinuousWalkStream:
         return Image.alpha_composite(canvas, layer)
 
     def _draw_moon(self, canvas: Image.Image, cel) -> Image.Image:
-        """N-hemisphere: waxing lit on the right; dark side transparent."""
-        pos = south_facing_project(
-            cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height
-        )
+        pos = south_facing_project(cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height)
         if pos is None:
             return canvas
         x, y = pos
@@ -203,12 +189,14 @@ class ContinuousWalkStream:
             rgb = Image.fromarray(arr.astype(np.uint8), "RGB")
         return rgb
 
-    def _draw_objects(self, canvas: Image.Image, ov: Overlay, body_x: float) -> Image.Image:
-        path = self.route.overlay_object_path(ov.kind)
+    def _blit_world_art(
+        self, canvas: Image.Image, path: Path, start: float, end: float, body_x: float
+    ) -> Image.Image:
+        """Generic world-anchored transparent art strip."""
         if not path.is_file():
             return canvas
-        left = self._world_to_screen_x(ov.start, body_x)
-        right = self._world_to_screen_x(ov.end, body_x)
+        left = self._world_to_screen_x(start, body_x)
+        right = self._world_to_screen_x(end, body_x)
         if self.cfg.facing < 0:
             left, right = right, left
         if right < -40 or left > self.cfg.width + 40:
@@ -222,6 +210,16 @@ class ContinuousWalkStream:
         tmp = Image.new("RGBA", result.size, (0, 0, 0, 0))
         tmp.paste(scaled, (int(left), 0), scaled)
         return Image.alpha_composite(result, tmp)
+
+    def _draw_objects(self, canvas: Image.Image, ov: Overlay, body_x: float) -> Image.Image:
+        return self._blit_world_art(
+            canvas, self.route.overlay_object_path(ov.kind), ov.start, ov.end, body_x
+        )
+
+    def _draw_feature(self, canvas: Image.Image, feat: Feature, body_x: float) -> Image.Image:
+        return self._blit_world_art(
+            canvas, self.route.feature_object_path(feat.kind), feat.start, feat.end, body_x
+        )
 
     def _draw_ortsschild(
         self, img: Image.Image, text: str, screen_x: float, ground_y: float
@@ -272,13 +270,17 @@ class ContinuousWalkStream:
             body_x = self._scroll_speed * t
             cel = celestial_at(self._scene_datetime(t), tz=self.cfg.tz)
 
-            # 1) Sky from real south-facing projection
             canvas = self._make_sky_canvas(cel)
             canvas = self._draw_projected_stars(canvas, cel)
             canvas = self._draw_moon(canvas, cel)
             canvas = self._draw_sun(canvas, cel)
             canvas = self._composite_landscape(canvas, state, base)
 
+            # Sparse individual features (farms, animals, ruins…)
+            for feat in self.route.active_features(body_x):
+                canvas = self._draw_feature(canvas, feat, body_x)
+
+            # Larger place overlays (dorf / stadt / wald)
             for ov in self.route.active_overlays(body_x):
                 canvas = self._draw_objects(canvas, ov, body_x)
             for ov in self.route.active_overlays(body_x, margin=600):
@@ -296,7 +298,6 @@ class ContinuousWalkStream:
 
     def _composite_landscape(self, sky_canvas, state, base):
         from domain.procedural import parallax_offset
-        from pathlib import Path
 
         result = sky_canvas.convert("RGBA")
         w, h = result.size
@@ -376,19 +377,18 @@ def run_mjpeg_server(
     server = HTTPServer((host, port), Handler)
     cel = celestial_at(tz=stream.cfg.tz)
     stars = project_stars(cel.local_time, stream.cfg.width, stream.cfg.height)
-    g = scene_grade(cel)
+    n_feat = len(stream.route.features)
+    n_ov = len(stream.route.overlays)
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
     print(
-        f"Blick nach Süden (DE 51°N/10°E) · {cel.local_time.strftime('%Y-%m-%d %H:%M %Z')}"
+        f"Blick nach Süden (DE) · {cel.local_time.strftime('%Y-%m-%d %H:%M %Z')} · "
+        f"{len(stars)} Sterne · {n_ov} Orte · {n_feat} Landschaftsmerkmale"
     )
-    print(
-        f"Sonne alt={cel.sun_alt_deg:+.0f}° az={cel.sun_az_deg:.0f}° · "
-        f"Mond alt={cel.moon_alt_deg:+.0f}° az={cel.moon_az_deg:.0f}° · "
-        f"{len(stars)} Sterne im FOV"
-    )
-    print(
-        f"Grade: brightness={g.brightness:.2f} saturation={g.saturation:.2f}"
-    )
+    kinds = {}
+    for f in stream.route.features:
+        kinds[f.kind.value] = kinds.get(f.kind.value, 0) + 1
+    summary = ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items(), key=lambda x: -x[1])[:8])
+    print(f"Features: {summary}")
     return server
 
 
