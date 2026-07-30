@@ -145,7 +145,6 @@ class VideoGenerationPipeline:
 
         walk_params = self._find_action_params(scene, "walk", char.id) or {}
         walk_path = walk_params.get("path")
-        keep_centered = bool(walk_params.get("keep_centered", True))
 
         step_length = float(walk_params.get("step_length", 40))
         cycle = float(walk_params.get("cycle", 0.6))
@@ -158,7 +157,6 @@ class VideoGenerationPipeline:
                 cycle = float(rule.params.get("cycle", cycle))
                 bob_amp = float(rule.params.get("bob_amp", bob_amp))
 
-        # Path direction → facing (+1 = face right / walk right)
         facing = 1.0
         if walk_path and len(walk_path) >= 2:
             p0, p1 = walk_path[0], walk_path[-1]
@@ -169,9 +167,6 @@ class VideoGenerationPipeline:
         )
         scroll_speed = sample["scroll_speed"]
 
-        # Orientation fix: background must scroll opposite to facing so the
-        # character appears to walk in the direction it faces.
-        # facing +1 (right) → scroll_x negative → bg moves left → walks right
         backgrounds = tuple(
             BackgroundLayer(
                 path=layer.path,
@@ -188,7 +183,8 @@ class VideoGenerationPipeline:
         )
 
         screen_x = scene.width * 0.40
-        screen_y = scene.height * 0.72
+        # Feet near ground band (ground.svg surface ~ y=370 on 480 canvas)
+        screen_y = scene.height * 0.82
 
         for i in range(n):
             t = i * dt
@@ -222,7 +218,6 @@ class VideoGenerationPipeline:
                     bone_transforms=bones,
                     root_position=(rx, ry),
                     root_rotation_deg=0.0 if facing > 0 else 180.0,
-                    # Positive scale = face right (body_side.svg is drawn facing right)
                     scale=char.default_scale * facing,
                     camera=CameraState(),
                 )

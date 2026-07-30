@@ -13,6 +13,8 @@ SHIN_LEN = 48.0
 UPPER_ARM_LEN = 40.0
 FOREARM_LEN = 38.0
 HIP_HEIGHT = 86.0
+# Small forward lean at the hip so thighs sit slightly in front of pure vertical
+HIP_FORWARD_BIAS_DEG = 10.0
 
 
 def head_bob(t: float, amplitude: float = 4.0, freq: float = 2.5) -> float:
@@ -34,7 +36,6 @@ def _two_bone_ik(
     thigh_len: float = THIGH_LEN,
     shin_len: float = SHIN_LEN,
 ) -> tuple[float, float, tuple[float, float]]:
-    """2-bone IK. Knee bends posterior (behind the hip→foot line)."""
     dx = foot[0] - hip[0]
     dy = foot[1] - hip[1]
     dist = math.hypot(dx, dy)
@@ -49,8 +50,7 @@ def _two_bone_ik(
     target = math.degrees(math.atan2(dx, dy))
     cos_a = (thigh_len ** 2 + dist ** 2 - shin_len ** 2) / (2 * thigh_len * dist)
     a = math.degrees(math.acos(_clamp(cos_a, -1.0, 1.0)))
-    # Knee posterior: +a (was -a → inverted bend)
-    thigh_ang = target + a
+    thigh_ang = target + a  # knee posterior
     rad = math.radians(thigh_ang)
     knee = (hip[0] + math.sin(rad) * thigh_len, hip[1] + math.cos(rad) * thigh_len)
     shin_ang = math.degrees(math.atan2(foot[0] - knee[0], foot[1] - knee[1]))
@@ -99,10 +99,17 @@ def grounded_walk(
     l_th, l_sh, _ = _two_bone_ik(hip, left_foot, thigh_len, shin_len)
     r_th, r_sh, _ = _two_bone_ik(hip, right_foot, thigh_len, shin_len)
 
-    # Arms opposite phase to legs
+    # Slight forward lean at hip→thigh (toward the legs / walk direction)
+    bias = HIP_FORWARD_BIAS_DEG * facing
+    l_th += bias
+    r_th += bias
+    # Shin absolute angles already point knee→foot; recompute not needed for small bias
+    # but shift shin equally so the knee chain stays consistent visually
+    l_sh += bias * 0.3
+    r_sh += bias * 0.3
+
     l_ua = -0.65 * l_th
     r_ua = -0.65 * r_th
-    # Elbow flex polarity flipped (was -40 → inverted)
     l_fa = l_ua + 40.0
     r_fa = r_ua + 40.0
 
