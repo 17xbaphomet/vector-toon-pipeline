@@ -1,0 +1,13 @@
+# Core
+pydantic>=2.0
+numpy>=1.24
+Pillow>=10.0
+cairosvg>=2.7
+svgelements>=1.9
+pydub>=0.25
+soundfile>=0.12
+ffmpeg-python>=0.2
+
+# Optional / later
+# playwright  # for headless SVG/HTML frame capture
+# librosa     # advanced audio features
