@@ -1,0 +1,38 @@
+{
+  "width": 800,
+  "height": 480,
+  "fps": 24,
+  "duration": 6.0,
+  "audio_path": null,
+  "dialogue": "Hallo! Ich bin Bob, der Cartoon. Ich laufe und spreche gleichzeitig auf Deutsch.",
+  "voice_id": "de_DE-thorsten-medium",
+  "backgrounds": [
+    {"path": "assets/backgrounds/sky.svg", "z_index": 0, "parallax": 0.1, "scroll_x": 5, "repeat_x": true},
+    {"path": "assets/backgrounds/hills.svg", "z_index": 1, "parallax": 0.4, "scroll_x": 20, "repeat_x": true},
+    {"path": "assets/backgrounds/ground.svg", "z_index": 2, "parallax": 1.0, "scroll_x": 40, "repeat_x": true}
+  ],
+  "characters": [
+    {
+      "id": "bob",
+      "base_svg": "assets/characters/bob/body.svg",
+      "layer_paths": {},
+      "mouth_shapes": {},
+      "bone_order": [],
+      "default_scale": 1.0
+    }
+  ],
+  "actions": [
+    {"type": "talk", "timing": {"start": 0.0, "end": 6.0}, "character_id": "bob", "params": {}},
+    {
+      "type": "walk",
+      "timing": {"start": 0.0, "end": 6.0},
+      "character_id": "bob",
+      "params": {"path": [[80, 350], [720, 350]], "speed": 110}
+    },
+    {
+      "type": "camera",
+      "timing": {"start": 0.0, "end": 6.0},
+      "params": {"from": [0, 0], "to": [80, 0]}
+    }
+  ]
+}
