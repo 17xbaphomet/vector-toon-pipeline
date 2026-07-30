@@ -10,43 +10,61 @@ Offline, deterministic cartoon video generation pipeline that relies on **vector
 - Procedural walk cycles
 - Vehicle / path following ("auto fahren")
 - Layered SVG characters with hierarchical transforms
-- Timeline-based scene composition (JSON/YAML)
+- Timeline-based scene composition (JSON)
 - Frame rendering → FFmpeg MP4
 
 ## Architecture (Clean)
 
 ```
 vector-toon-pipeline/
-├── domain/              # pure entities, value objects, interfaces
-├── application/         # use-cases + pipeline orchestrator
-├── infrastructure/      # Rhubarb wrapper, SVG renderer, FFmpeg
-├── assets/              # character packs, mouth shapes, backgrounds
+├── domain/                  # pure entities, value objects, interfaces, procedural
+├── application/             # VideoGenerationPipeline (FSM) + exceptions
+├── infrastructure/
+│   ├── lipsync/             # Rhubarb + energy fallback
+│   ├── renderers/           # PillowCutoutRenderer (SVG → PNG)
+│   ├── encoders/            # FFmpegEncoder
+│   └── assets/              # FileCharacterAssetRepository
+├── assets/characters/bob/   # sample geometric character + mouth shapes
+├── examples/
 ├── cli.py
 ├── requirements.txt
 └── README.md
 ```
 
-## Quick status (GitHub Guardian)
+## Status (GitHub Guardian)
 
 - [x] Domain models (Viseme, Affine, FrameState, CharacterRig, SceneSpec, interfaces)
-- [ ] Bootstrap folders + application skeleton
-- [ ] Rhubarb VisemeExtractor
-- [ ] MVP mouth-swap renderer
-- [ ] Procedural walk + path follower
-- [ ] Full CLI
+- [x] Rhubarb VisemeExtractor (+ energy fallback)
+- [x] Application layer + Pipeline FSM
+- [x] domain/procedural.py (head_bob, walk_cycle, path_follower, sample_viseme)
+- [x] MVP FrameRenderer (Pillow + cairosvg mouth swap + head bob)
+- [x] FFmpeg encoder
+- [x] Sample character "bob" (geometric SVG + 9 mouth shapes)
+- [x] CLI wiring
+- [ ] Full walk/drive actions in compose stage
+- [ ] Better layered SVG hierarchy / bone parenting
+- [ ] Headless browser renderer option (playwright)
 
 ## Install
 
 ```bash
 pip install -r requirements.txt
-# Also install Rhubarb Lip Sync binary: https://github.com/DanielSWolf/rhubarb-lip-sync/releases
-# and FFmpeg
+# Rhubarb Lip Sync binary (optional but recommended):
+# https://github.com/DanielSWolf/rhubarb-lip-sync/releases
+# FFmpeg must be on PATH
+```
+
+## Quick start (once you have a short .wav)
+
+```bash
+# put a sample.wav next to the demo scene or edit the path
+python cli.py examples/demo_scene.json -o out.mp4 --work-dir ./work
 ```
 
 ## Pipeline stages
 
 1. Parse SceneSpec + load CharacterRig assets
-2. Audio → VisemeCue list (Rhubarb)
+2. Audio → VisemeCue list (Rhubarb or energy fallback)
 3. Generate procedural clips (walk, drive, head bob)
 4. Compose timeline → sequence of FrameState
 5. Render frames (SVG layers + transforms → PNG)

@@ -1,0 +1,7 @@
+{
+  "id": "bob",
+  "base_svg": "body.svg",
+  "default_scale": 1.0,
+  "bone_order": ["body", "head", "left_arm", "right_arm", "left_leg", "right_leg"],
+  "layers": {}
+}

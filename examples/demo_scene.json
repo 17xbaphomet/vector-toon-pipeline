@@ -1,0 +1,26 @@
+{
+  "width": 640,
+  "height": 480,
+  "fps": 24,
+  "duration": 3.0,
+  "audio_path": "examples/sample.wav",
+  "background": null,
+  "characters": [
+    {
+      "id": "bob",
+      "base_svg": "assets/characters/bob/body.svg",
+      "layer_paths": {},
+      "mouth_shapes": {},
+      "bone_order": ["body", "head"],
+      "default_scale": 1.2
+    }
+  ],
+  "actions": [
+    {
+      "type": "talk",
+      "timing": {"start": 0.0, "end": 3.0},
+      "character_id": "bob",
+      "params": {}
+    }
+  ]
+}

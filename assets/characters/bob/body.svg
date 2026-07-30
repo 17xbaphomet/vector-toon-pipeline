@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="320" viewBox="0 0 200 320">
+  <!-- Simple geometric "Bob" character -->
+  <!-- Body -->
+  <ellipse cx="100" cy="180" rx="45" ry="60" fill="#4A90D9" stroke="#2C5F8A" stroke-width="3"/>
+  <!-- Head -->
+  <circle cx="100" cy="90" r="40" fill="#F5CBA7" stroke="#D4A574" stroke-width="2"/>
+  <!-- Eyes -->
+  <circle cx="85" cy="85" r="6" fill="#222"/>
+  <circle cx="115" cy="85" r="6" fill="#222"/>
+  <!-- Legs -->
+  <rect x="75" y="235" width="18" height="55" rx="6" fill="#2C5F8A"/>
+  <rect x="107" y="235" width="18" height="55" rx="6" fill="#2C5F8A"/>
+  <!-- Arms -->
+  <rect x="40" y="140" width="16" height="55" rx="6" fill="#F5CBA7" transform="rotate(-20 48 140)"/>
+  <rect x="144" y="140" width="16" height="55" rx="6" fill="#F5CBA7" transform="rotate(20 152 140)"/>
+</svg>
