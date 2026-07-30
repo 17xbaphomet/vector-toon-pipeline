@@ -135,16 +135,23 @@ class ContinuousWalkStream:
         return Image.alpha_composite(canvas, layer)
 
     def _draw_moon(self, canvas: Image.Image, cel) -> Image.Image:
-        """Lit side opaque; dark side highly transparent so sky shows through by day."""
+        """
+        N-hemisphere convention (DOC):
+          waxing → lit on the RIGHT
+          waning → lit on the LEFT
+        Dark side: high transparency so daytime sky shows through.
+        """
         pos = alt_az_to_screen(cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height)
         if pos is None:
             return canvas
         x, y = pos
         r = 22
         moon_lit = (230, 230, 210, 240)
-        # Dark side: almost fully transparent — sky bleeds through (no black disc)
         moon_dark = (230, 230, 210, 18)
         phase = cel.moon_phase
+        # Elongation angle: 0=new, π=full, 2π=new
+        # Orthographic terminator: x = -cos(phase·2π)·half
+        # (sign flipped so waxing lights the right side)
         pa = phase * 2.0 * math.pi
         moon_img = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
         cx, cy = r + 1, r + 1
@@ -154,8 +161,9 @@ class ContinuousWalkStream:
                 if dx * dx + dy * dy > r * r:
                     continue
                 half = math.sqrt(max(0.0, r * r - dy * dy))
-                term = math.cos(pa) * half
-                lit = dx >= term if phase <= 0.5 else dx <= term
+                term = -math.cos(pa) * half
+                # Right of terminator is always the sunlit side for this projection
+                lit = dx >= term
                 moon_img.putpixel((px, py), moon_lit if lit else moon_dark)
         layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         layer.paste(moon_img, (int(x - r - 1), int(y - r - 1)), moon_img)
