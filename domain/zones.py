@@ -51,15 +51,9 @@ class LandscapeRoute:
     seed: int | None = None
 
     def base_layers(self, scroll_speed: float, facing: float = 1.0) -> tuple[BackgroundLayer, ...]:
+        """Mid + ground only — sky is painted dynamically behind everything."""
         root = self.assets_root
         return (
-            BackgroundLayer(
-                path=root / "felder" / "sky.svg",
-                z_index=0,
-                parallax=0.10,
-                scroll_x=-facing * scroll_speed * 0.10,
-                repeat_x=True,
-            ),
             BackgroundLayer(
                 path=root / "felder" / "mid.svg",
                 z_index=1,
@@ -77,7 +71,6 @@ class LandscapeRoute:
         )
 
     def overlay_object_path(self, kind: ZoneId) -> Path:
-        """Transparent mid SVG with only objects (no sky/ground fill)."""
         return self.assets_root / kind.value / "objects.svg"
 
     def active_overlays(self, distance: float, margin: float = 2000.0) -> list[Overlay]:

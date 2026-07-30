@@ -1,4 +1,4 @@
-"""Stream: base landscape, celestial sky, object overlays, character."""
+"""Stream: sky behind all → landscape → objects → character → day/night grade."""
 
 from __future__ import annotations
 
@@ -11,11 +11,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
 from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.procedural import grounded_walk, head_bob
-from domain.sky import alt_az_to_screen, celestial_at, sky_colors
+from domain.sky import (
+    alt_az_to_screen,
+    celestial_at,
+    scene_grade,
+    sky_colors,
+)
 from domain.value_objects import Affine, CameraState, Viseme
 from domain.zones import LandscapeRoute, Overlay, generate_route
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
@@ -34,7 +39,6 @@ class StreamConfig:
     duration: float | None = None
     route_seed: int | None = 42
     tz: str = "Europe/Berlin"
-    # 1.0 = real-time; 3600 = 1 stream-second advances 1 hour
     time_scale: float = 1.0
     start_time: datetime | None = None
 
@@ -96,21 +100,31 @@ class ContinuousWalkStream:
     def _world_to_screen_x(self, world_x: float, body_x: float) -> float:
         return self._char_sx + (world_x - body_x) * self.cfg.facing
 
-    def _draw_sky_gradient(self, canvas: Image.Image, cel) -> Image.Image:
-        w, h = canvas.size
+    # ── sky (bottom-most layer) ──────────────────────────────────────
+
+    def _make_sky_canvas(self, cel) -> Image.Image:
+        """Full-frame sky gradient — behind landscape, objects, character."""
+        w, h = self.cfg.width, self.cfg.height
         top, bot = sky_colors(cel)
-        horizon = int(h * 0.55)
-        sky = Image.new("RGBA", (w, horizon), (0, 0, 0, 0))
+        # Horizon band: sky fills entire frame; lower part will be covered by ground art
+        sky = Image.new("RGB", (w, h))
         draw = ImageDraw.Draw(sky)
-        for y in range(horizon):
-            t = y / max(horizon - 1, 1)
-            r = int(top[0] + (bot[0] - top[0]) * t)
-            g = int(top[1] + (bot[1] - top[1]) * t)
-            b = int(top[2] + (bot[2] - top[2]) * t)
-            draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
-        base = canvas.convert("RGBA")
-        base.paste(sky, (0, 0), sky)
-        return base
+        # Gradient over full height so no old day-sky shows through gaps
+        for y in range(h):
+            t = y / max(h - 1, 1)
+            # Stronger top color in upper 55%, blend toward slightly darker near bottom
+            if t < 0.55:
+                u = t / 0.55
+                r = int(top[0] + (bot[0] - top[0]) * u)
+                g = int(top[1] + (bot[1] - top[1]) * u)
+                b = int(top[2] + (bot[2] - top[2]) * u)
+            else:
+                u = (t - 0.55) / 0.45
+                r = int(bot[0] * (1 - 0.15 * u))
+                g = int(bot[1] * (1 - 0.15 * u))
+                b = int(bot[2] * (1 - 0.15 * u))
+            draw.line([(0, y), (w, y)], fill=(r, g, b))
+        return sky.convert("RGBA")
 
     def _draw_sun(self, canvas: Image.Image, cel) -> Image.Image:
         pos = alt_az_to_screen(cel.sun_alt_deg, cel.sun_az_deg, canvas.width, canvas.height)
@@ -124,7 +138,7 @@ class ContinuousWalkStream:
             rr = r + i
             color = (255, 220, 80, alpha) if i else (255, 230, 100, 255)
             draw.ellipse([x - rr, y - rr, x + rr, y + rr], fill=color)
-        return Image.alpha_composite(canvas.convert("RGBA"), layer)
+        return Image.alpha_composite(canvas, layer)
 
     def _draw_moon(self, canvas: Image.Image, cel) -> Image.Image:
         pos = alt_az_to_screen(cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height)
@@ -136,7 +150,6 @@ class ContinuousWalkStream:
         moon_dark = (30, 32, 50, 220)
         phase = cel.moon_phase
         pa = phase * 2.0 * math.pi
-
         moon_img = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
         cx, cy = r + 1, r + 1
         for py in range(r * 2 + 2):
@@ -146,13 +159,11 @@ class ContinuousWalkStream:
                     continue
                 half = math.sqrt(max(0.0, r * r - dy * dy))
                 term = math.cos(pa) * half
-                # Waxing: lit on the right; waning: lit on the left
                 lit = dx >= term if phase <= 0.5 else dx <= term
                 moon_img.putpixel((px, py), moon_lit if lit else moon_dark)
-
         layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         layer.paste(moon_img, (int(x - r - 1), int(y - r - 1)), moon_img)
-        return Image.alpha_composite(canvas.convert("RGBA"), layer)
+        return Image.alpha_composite(canvas, layer)
 
     def _draw_stars(self, canvas: Image.Image, cel) -> Image.Image:
         if cel.sun_alt_deg > -4:
@@ -169,14 +180,29 @@ class ContinuousWalkStream:
             state = (state * 1103515245 + 12345) & 0x7FFFFFFF
             sy = state % horizon
             draw.ellipse([sx, sy, sx + 1, sy + 1], fill=(255, 255, 240, int(180 * strength)))
-        return Image.alpha_composite(canvas.convert("RGBA"), layer)
+        return Image.alpha_composite(canvas, layer)
 
-    def _draw_celestial(self, canvas: Image.Image, cel) -> Image.Image:
-        canvas = self._draw_sky_gradient(canvas, cel)
-        canvas = self._draw_stars(canvas, cel)
-        canvas = self._draw_moon(canvas, cel)
-        canvas = self._draw_sun(canvas, cel)
-        return canvas
+    def _apply_grade(self, img: Image.Image, cel) -> Image.Image:
+        """Brightness / saturation / tint over the whole finished frame."""
+        grade = scene_grade(cel)
+        rgb = img.convert("RGB")
+
+        if abs(grade.brightness - 1.0) > 0.01:
+            rgb = ImageEnhance.Brightness(rgb).enhance(grade.brightness)
+        if abs(grade.saturation - 1.0) > 0.01:
+            rgb = ImageEnhance.Color(rgb).enhance(grade.saturation)
+
+        # Additive tint
+        if any(abs(v) > 0.005 for v in (grade.tint_r, grade.tint_g, grade.tint_b)):
+            import numpy as np
+
+            arr = np.asarray(rgb, dtype=np.float32)
+            arr[..., 0] = np.clip(arr[..., 0] + grade.tint_r * 255, 0, 255)
+            arr[..., 1] = np.clip(arr[..., 1] + grade.tint_g * 255, 0, 255)
+            arr[..., 2] = np.clip(arr[..., 2] + grade.tint_b * 255, 0, 255)
+            rgb = Image.fromarray(arr.astype(np.uint8), "RGB")
+
+        return rgb
 
     def _draw_objects(self, canvas: Image.Image, ov: Overlay, body_x: float) -> Image.Image:
         path = self.route.overlay_object_path(ov.kind)
@@ -232,6 +258,7 @@ class ContinuousWalkStream:
         self._t0 = time.perf_counter()
         dt = 1.0 / max(self.cfg.fps, 1.0)
         frame_i = 0
+        # mid + ground only — no static sky.svg
         base = self.route.base_layers(self._scroll_speed, self.cfg.facing)
 
         while self._running:
@@ -247,21 +274,69 @@ class ContinuousWalkStream:
             body_x = self._scroll_speed * t
             cel = celestial_at(self._scene_datetime(t), tz=self.cfg.tz)
 
-            canvas = self.renderer.render_backgrounds(
+            # 1) Sky FULL canvas — bottom-most layer
+            canvas = self._make_sky_canvas(cel)
+            canvas = self._draw_stars(canvas, cel)
+            canvas = self._draw_moon(canvas, cel)
+            canvas = self._draw_sun(canvas, cel)
+
+            # 2) Landscape (mid + ground) on top of sky
+            land = self.renderer.render_backgrounds(
                 state, (self.cfg.width, self.cfg.height), backgrounds=base
             )
-            canvas = self._draw_celestial(canvas, cel)
+            # land has opaque sky-blue fill from renderer default — mask it:
+            # render_backgrounds starts with solid sky color; composite only non-default?
+            # Safer: renderer uses transparent init when we pass a flag — for now
+            # alpha-composite land which includes its fill. Fix by making land
+            # canvas transparent before layers.
+            canvas = self._composite_landscape(canvas, state, base)
 
+            # 3) Objects
             for ov in self.route.active_overlays(body_x):
                 canvas = self._draw_objects(canvas, ov, body_x)
+
+            # 4) Signs
             for ov in self.route.active_overlays(body_x, margin=600):
                 sx = self._world_to_screen_x(ov.sign_world_x, body_x)
                 canvas = self._draw_ortsschild(canvas, ov.sign_text, sx, self._char_sy)
 
-            char = self.renderer.render_character(state, self.rig, (self.cfg.width, self.cfg.height))
+            # 5) Character
+            char = self.renderer.render_character(
+                state, self.rig, (self.cfg.width, self.cfg.height)
+            )
             frame = Image.alpha_composite(canvas.convert("RGBA"), char)
+
+            # 6) Full-scene day/night grade (brightness, saturation, tint)
+            frame = self._apply_grade(frame, cel)
+
             yield frame.convert("RGB")
             frame_i += 1
+
+    def _composite_landscape(self, sky_canvas, state, base):
+        """Paste scrolling mid/ground onto sky without opaque day-blue fill."""
+        from domain.procedural import parallax_offset
+        from pathlib import Path
+
+        result = sky_canvas.convert("RGBA")
+        w, h = result.size
+        for layer in sorted(base, key=lambda b: b.z_index):
+            img = self.renderer._svg_to_pil(Path(layer.path))
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            ox, oy = parallax_offset(
+                state.camera, layer.parallax, state.time, layer.scroll_x, layer.scroll_y
+            )
+            if layer.repeat_x:
+                iw = img.size[0]
+                if iw <= 0:
+                    continue
+                x = (int(ox) % iw) - iw
+                while x < w + iw:
+                    result.alpha_composite(img, (x, int(oy)))
+                    x += iw
+            else:
+                result.alpha_composite(img, (int(ox), int(oy)))
+        return result
 
     def frames_jpeg(self, quality: int = 75) -> Iterator[bytes]:
         for img in self.frames():
@@ -319,6 +394,7 @@ def run_mjpeg_server(
 
     server = HTTPServer((host, port), Handler)
     cel = celestial_at(tz=stream.cfg.tz)
+    g = scene_grade(cel)
     phases = [
         (0.03, "Neumond"), (0.22, "zunehmende Sichel"), (0.28, "erstes Viertel"),
         (0.47, "zunehmender Mond"), (0.53, "Vollmond"), (0.72, "abnehmender Mond"),
@@ -328,10 +404,12 @@ def run_mjpeg_server(
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
     print(
         f"Himmel: {cel.local_time.strftime('%Y-%m-%d %H:%M %Z')} · "
-        f"Sonne {cel.sun_alt_deg:+.0f}° · Mond {cel.moon_alt_deg:+.0f}° · "
-        f"{pname} ({cel.moon_illumination*100:.0f}% beleuchtet)"
+        f"Sonne {cel.sun_alt_deg:+.0f}° · Mond {cel.moon_alt_deg:+.0f}° · {pname}"
     )
-    print(f"time_scale={stream.cfg.time_scale}x  (1=Echtzeit, 3600=1s→1h)")
+    print(
+        f"Grade: brightness={g.brightness:.2f} saturation={g.saturation:.2f} "
+        f"tint=({g.tint_r:+.2f},{g.tint_g:+.2f},{g.tint_b:+.2f})"
+    )
     return server
 
 
