@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from io import BytesIO
 from pathlib import Path
 from typing import Sequence
@@ -16,19 +17,24 @@ from domain.value_objects import Affine, BackgroundLayer, Viseme
 
 
 def _rotation_deg(tf: Affine) -> float:
-    """Extract approximate rotation from affine (from a,b)."""
-    import math
-
     return math.degrees(math.atan2(tf.b, tf.a))
 
 
 class PillowCutoutRenderer(FrameRenderer):
     """
-    Profile walk renderer:
-    - parallax / scrolling backgrounds
-    - torso (body_side) + articulated limbs (thigh→shin, upper_arm→forearm)
-    - horizontal flip when scale < 0 (facing left)
+    Profile walk renderer with correct joint chaining.
+
+    Coordinate convention (root = feet / screen position):
+      shoulder ≈ (cx, cy - 125)
+      hip      ≈ (cx, cy - 55)
+    Limbs hang downward; angle 0 = straight down, positive = swing forward (right).
     """
+
+    # Unscaled segment lengths (match limb SVG heights roughly)
+    THIGH_LEN = 50.0
+    SHIN_LEN = 48.0
+    UPPER_ARM_LEN = 40.0
+    FOREARM_LEN = 38.0
 
     def __init__(self, cache_dir: Path | None = None) -> None:
         self.cache_dir = Path(cache_dir or "./work/svg_cache")
@@ -57,12 +63,18 @@ class PillowCutoutRenderer(FrameRenderer):
                 )
                 self._paste(canvas, img, int(ox), int(oy), tile_x=layer.repeat_x)
 
-        # Character root
         cx, cy = state.root_position
         flip = state.scale < 0
         scale = abs(state.scale) if state.scale != 0 else 1.0
 
-        # Prefer side view if available
+        body_tf = state.bone_transforms.get("body", Affine.identity())
+        bob_y = body_tf.f * scale
+
+        # Shared skeleton anchors (relative to root / feet)
+        hip_y = cy - 55 * scale + bob_y
+        shoulder_y = cy - 125 * scale + bob_y
+        torso_cy = cy - 95 * scale + bob_y
+
         side = Path(rig.base_svg).parent / "body_side.svg"
         torso_path = side if side.is_file() else rig.base_svg
         limbs_dir = Path(rig.base_svg).parent / "limbs"
@@ -70,56 +82,63 @@ class PillowCutoutRenderer(FrameRenderer):
         torso = self._svg_to_pil(torso_path)
         if flip:
             torso = torso.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        self._paste_centered(canvas, torso, cx, torso_cy, scale)
 
-        body_tf = state.bone_transforms.get("body", Affine.identity())
-        bob_y = body_tf.f
-
-        self._paste_scaled(canvas, torso, cx, cy - 40 + bob_y, scale)
-
-        # Limb chain: back limbs first, then front
-        # Profile facing right: right limbs slightly behind
-        self._draw_leg(
-            canvas, limbs_dir, state, cx, cy, scale, flip,
+        # Draw order: far limbs first, near limbs on top
+        # facing right: right = far, left = near
+        self._draw_leg_chain(
+            canvas, limbs_dir, state,
+            hip_x=cx + (-6 if not flip else 6) * scale,
+            hip_y=hip_y,
+            scale=scale, flip=flip,
             thigh_key="right_thigh", shin_key="right_shin",
-            hip_off=(-8, 10), behind=True,
         )
-        self._draw_arm(
-            canvas, limbs_dir, state, cx, cy, scale, flip,
+        self._draw_arm_chain(
+            canvas, limbs_dir, state,
+            sh_x=cx + (-4 if not flip else 4) * scale,
+            sh_y=shoulder_y,
+            scale=scale, flip=flip,
             upper_key="right_upper_arm", fore_key="right_forearm",
-            shoulder_off=(-6, -35), behind=True,
         )
-        self._draw_leg(
-            canvas, limbs_dir, state, cx, cy, scale, flip,
+        self._draw_leg_chain(
+            canvas, limbs_dir, state,
+            hip_x=cx + (6 if not flip else -6) * scale,
+            hip_y=hip_y,
+            scale=scale, flip=flip,
             thigh_key="left_thigh", shin_key="left_shin",
-            hip_off=(6, 10), behind=False,
         )
-        self._draw_arm(
-            canvas, limbs_dir, state, cx, cy, scale, flip,
+        self._draw_arm_chain(
+            canvas, limbs_dir, state,
+            sh_x=cx + (4 if not flip else -4) * scale,
+            sh_y=shoulder_y,
+            scale=scale, flip=flip,
             upper_key="left_upper_arm", fore_key="left_forearm",
-            shoulder_off=(8, -35), behind=False,
         )
 
-        # Mouth on head region
         mouth_path = rig.mouth_shapes.get(state.viseme) or rig.mouth_shapes.get(Viseme.X)
         if mouth_path:
             mouth = self._svg_to_pil(mouth_path)
             if flip:
                 mouth = mouth.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
             head_tf = state.bone_transforms.get("head", Affine.identity())
-            mx = cx + (18 if not flip else -18) * scale
-            my = cy - 95 * scale + head_tf.f + bob_y
-            self._paste_scaled(canvas, mouth, mx, my, scale * 0.7)
+            mx = cx + (22 if not flip else -22) * scale
+            my = cy - 155 * scale + bob_y + head_tf.f * scale
+            self._paste_centered(canvas, mouth, mx, my, scale * 0.65)
 
         out = self.cache_dir / f"frame_{state.time:.4f}.png"
         canvas.convert("RGB").save(out, "PNG")
         return out
 
-    def _draw_leg(
-        self, canvas, limbs_dir, state, cx, cy, scale, flip,
-        thigh_key, shin_key, hip_off, behind,
-    ):
-        thigh = self._limb_img(limbs_dir / "thigh.svg", flip)
-        shin = self._limb_img(limbs_dir / "shin.svg", flip)
+    # ------------------------------------------------------------------
+    # Limb chains
+    # ------------------------------------------------------------------
+
+    def _draw_leg_chain(
+        self, canvas, limbs_dir, state,
+        hip_x, hip_y, scale, flip, thigh_key, shin_key,
+    ) -> None:
+        thigh = self._limb_img(limbs_dir / "thigh.svg", flip=False)
+        shin = self._limb_img(limbs_dir / "shin.svg", flip=False)
         if thigh is None:
             return
 
@@ -127,35 +146,31 @@ class PillowCutoutRenderer(FrameRenderer):
             "left_leg" if "left" in thigh_key else "right_leg", Affine.identity()
         )
         sh_tf = state.bone_transforms.get(shin_key, Affine.identity())
+
         hip_ang = _rotation_deg(th_tf)
-        knee_ang = _rotation_deg(sh_tf)
-
-        ox, oy = hip_off
+        knee_ang = _rotation_deg(sh_tf)  # local relative bend
         if flip:
-            ox = -ox
-        hx = cx + ox * scale
-        hy = cy + oy * scale
+            hip_ang = -hip_ang
+            knee_ang = -knee_ang
 
-        thigh_r = self._rotate(thigh, hip_ang if not flip else -hip_ang)
-        self._paste_scaled(canvas, thigh_r, hx, hy + 20 * scale, scale, pivot="top")
+        # Angle 0 = straight down; positive swings toward +x (forward when facing right)
+        self._paste_limb_at_joint(canvas, thigh, hip_ang, hip_x, hip_y, scale)
 
-        # Knee position approx: hip + rotated thigh length
-        import math
+        thigh_len = self.THIGH_LEN * scale
+        rad = math.radians(hip_ang)
+        knee_x = hip_x + math.sin(rad) * thigh_len
+        knee_y = hip_y + math.cos(rad) * thigh_len
 
-        thigh_len = 48 * scale
-        ang = math.radians(hip_ang if not flip else -hip_ang)
-        kx = hx + math.sin(ang) * thigh_len
-        ky = hy + math.cos(ang) * thigh_len
         if shin is not None:
-            shin_r = self._rotate(shin, (hip_ang + knee_ang) if not flip else -(hip_ang + knee_ang))
-            self._paste_scaled(canvas, shin_r, kx, ky + 18 * scale, scale, pivot="top")
+            world_shin = hip_ang + knee_ang
+            self._paste_limb_at_joint(canvas, shin, world_shin, knee_x, knee_y, scale)
 
-    def _draw_arm(
-        self, canvas, limbs_dir, state, cx, cy, scale, flip,
-        upper_key, fore_key, shoulder_off, behind,
-    ):
-        upper = self._limb_img(limbs_dir / "upper_arm.svg", flip)
-        fore = self._limb_img(limbs_dir / "forearm.svg", flip)
+    def _draw_arm_chain(
+        self, canvas, limbs_dir, state,
+        sh_x, sh_y, scale, flip, upper_key, fore_key,
+    ) -> None:
+        upper = self._limb_img(limbs_dir / "upper_arm.svg", flip=False)
+        fore = self._limb_img(limbs_dir / "forearm.svg", flip=False)
         if upper is None:
             return
 
@@ -163,60 +178,87 @@ class PillowCutoutRenderer(FrameRenderer):
             "left_arm" if "left" in upper_key else "right_arm", Affine.identity()
         )
         f_tf = state.bone_transforms.get(fore_key, Affine.identity())
+
         sh_ang = _rotation_deg(u_tf)
         el_ang = _rotation_deg(f_tf)
-
-        ox, oy = shoulder_off
         if flip:
-            ox = -ox
-        sx = cx + ox * scale
-        sy = cy + oy * scale
+            sh_ang = -sh_ang
+            el_ang = -el_ang
 
-        upper_r = self._rotate(upper, sh_ang if not flip else -sh_ang)
-        self._paste_scaled(canvas, upper_r, sx, sy + 15 * scale, scale, pivot="top")
+        self._paste_limb_at_joint(canvas, upper, sh_ang, sh_x, sh_y, scale)
 
-        import math
+        arm_len = self.UPPER_ARM_LEN * scale
+        rad = math.radians(sh_ang)
+        elbow_x = sh_x + math.sin(rad) * arm_len
+        elbow_y = sh_y + math.cos(rad) * arm_len
 
-        arm_len = 38 * scale
-        ang = math.radians(sh_ang if not flip else -sh_ang)
-        ex = sx + math.sin(ang) * arm_len
-        ey = sy + math.cos(ang) * arm_len
         if fore is not None:
-            fore_r = self._rotate(fore, (sh_ang + el_ang) if not flip else -(sh_ang + el_ang))
-            self._paste_scaled(canvas, fore_r, ex, ey + 14 * scale, scale, pivot="top")
+            world_fore = sh_ang + el_ang
+            self._paste_limb_at_joint(canvas, fore, world_fore, elbow_x, elbow_y, scale)
 
-    def _limb_img(self, path: Path, flip: bool) -> Image.Image | None:
-        if not path.is_file():
-            return None
-        img = self._svg_to_pil(path)
-        if flip:
-            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-        return img
+    # ------------------------------------------------------------------
+    # Pivot-stable paste
+    # ------------------------------------------------------------------
 
-    def _rotate(self, img: Image.Image, degrees: float) -> Image.Image:
-        return img.rotate(-degrees, expand=True, resample=Image.Resampling.BICUBIC)
+    def _paste_limb_at_joint(
+        self,
+        canvas: Image.Image,
+        img: Image.Image,
+        angle_deg: float,
+        joint_x: float,
+        joint_y: float,
+        scale: float,
+    ) -> None:
+        """
+        Scale limb, rotate around its top-center pivot, paste so that
+        pivot lands exactly on (joint_x, joint_y).
+        """
+        local = img
+        if scale != 1.0:
+            nw = max(1, int(local.width * scale))
+            nh = max(1, int(local.height * scale))
+            local = local.resize((nw, nh), Image.Resampling.LANCZOS)
 
-    def _paste_scaled(
+        w, h = local.size
+        # Pivot: top-center of the limb sprite
+        px, py = w / 2.0, 2.0
+
+        # Pad so pivot sits at the center of a square large enough to rotate into
+        diag = int(math.ceil(math.hypot(w, h))) + 2
+        side = diag * 2
+        pad = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        origin = (int(diag - px), int(diag - py))
+        pad.paste(local, origin, local)
+
+        rotated = pad.rotate(-angle_deg, resample=Image.Resampling.BICUBIC)
+        # After rotation around pad center, pivot is still at (diag, diag)
+        dest = (int(joint_x - diag), int(joint_y - diag))
+        canvas.paste(rotated, dest, rotated)
+
+    def _paste_centered(
         self,
         canvas: Image.Image,
         img: Image.Image,
         cx: float,
         cy: float,
         scale: float,
-        pivot: str = "center",
     ) -> None:
         local = img
         if scale != 1.0:
             nw = max(1, int(local.width * scale))
             nh = max(1, int(local.height * scale))
             local = local.resize((nw, nh), Image.Resampling.LANCZOS)
-        if pivot == "top":
-            x = int(cx - local.width / 2)
-            y = int(cy)
-        else:
-            x = int(cx - local.width / 2)
-            y = int(cy - local.height / 2)
+        x = int(cx - local.width / 2)
+        y = int(cy - local.height / 2)
         canvas.paste(local, (x, y), local if local.mode == "RGBA" else None)
+
+    def _limb_img(self, path: Path, flip: bool = False) -> Image.Image | None:
+        if not path.is_file():
+            return None
+        img = self._svg_to_pil(path)
+        if flip:
+            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        return img
 
     def _paste(
         self,
@@ -226,12 +268,14 @@ class PillowCutoutRenderer(FrameRenderer):
         oy: int,
         tile_x: bool = False,
     ) -> None:
-        cw, ch = canvas.size
-        iw, ih = img.size
+        cw, _ = canvas.size
+        iw = img.size[0]
         if not tile_x:
             canvas.paste(img, (ox, oy), img if img.mode == "RGBA" else None)
             return
-        start = (ox % iw) - iw if iw else 0
+        if iw <= 0:
+            return
+        start = (ox % iw) - iw
         x = start
         while x < cw + iw:
             canvas.paste(img, (x, oy), img if img.mode == "RGBA" else None)
