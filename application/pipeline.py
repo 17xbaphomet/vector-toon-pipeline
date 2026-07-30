@@ -19,10 +19,10 @@ from domain.value_objects import Affine, BackgroundLayer, CameraState
 from domain.procedural import (
     camera_at,
     facing_from_heading,
+    grounded_walk,
     head_bob,
     path_position,
     sample_viseme_at,
-    walk_cycle_pose,
 )
 from application.exceptions import PipelineStageError
 
@@ -138,8 +138,8 @@ class VideoGenerationPipeline:
         self, scene: SceneSpec, visemes: Sequence[VisemeCue]
     ) -> tuple[list[FrameState], Sequence[BackgroundLayer]]:
         """
-        Walk: character stays near screen center (profile),
-        world/background scrolls opposite to walk direction.
+        Grounded walk: stance foot locked in world space,
+        background scrolls at exact body velocity → no foot sliding.
         """
         self.on_progress(self.state, "Composing FrameState sequence")
         frames: list[FrameState] = []
@@ -157,52 +157,44 @@ class VideoGenerationPipeline:
 
         walk_params = self._find_action_params(scene, "walk", char.id) or {}
         walk_path = walk_params.get("path")
-        walk_speed = float(walk_params.get("speed", 120))
         keep_centered = bool(walk_params.get("keep_centered", True))
 
-        stride, cycle, bob_amp = 28.0, 0.55, 5.0
-        for rule in rig.rules:
+        # Stride parameters from character rules or action
+        step_length = float(walk_params.get("step_length", 55))
+        cycle = float(walk_params.get("cycle", 0.6))
+        bob_amp = 4.0
+        for rule in getattr(rig, "rules", ()):
             if rule.type.value == "walk":
-                stride = float(rule.params.get("stride", stride))
+                step_length = float(rule.params.get("step_length", rule.params.get("stride", step_length) * 2))
                 cycle = float(rule.params.get("cycle", cycle))
                 bob_amp = float(rule.params.get("bob_amp", bob_amp))
 
-        # Screen position when centered
-        screen_x = scene.width * 0.4
-        screen_y = scene.height * 0.72
-
-        # Direction of path for bg scroll (constant direction walks)
+        # Facing from path direction
         facing = 1.0
         if walk_path and len(walk_path) >= 2:
             p0, p1 = walk_path[0], walk_path[-1]
             facing = 1.0 if (p1[0] - p0[0]) >= 0 else -1.0
 
-        # Override background scroll so world moves opposite to walk
-        # scroll_x positive = bg moves right; we want opposite of facing
-        # When character "walks right", bg should drift left → scroll_x negative
-        # Use walk_speed so scroll rate matches gait
-        bg_scroll_base = -facing * walk_speed  # px/s world motion
+        # Sample once to get scroll_speed from grounded model
+        sample = grounded_walk(
+            0.0,
+            step_length=step_length,
+            cycle=cycle,
+            bob_amp=bob_amp,
+            facing=facing,
+        )
+        scroll_speed = sample["scroll_speed"]  # body velocity world units/s
 
-        backgrounds = []
-        for layer in scene.backgrounds:
-            # layer.parallax scales the effective scroll
-            backgrounds.append(
-                replace(
-                    layer,
-                    scroll_x=bg_scroll_base * layer.parallax
-                    if walk_path
-                    else layer.scroll_x,
-                )
-                if hasattr(layer, "parallax")
-                else layer
-            )
-        # BackgroundLayer is frozen – rebuild
+        # Background moves OPPOSITE to walk; rate = body velocity * parallax
+        # scroll_x is px/s added as scroll_x * t in parallax_offset
         backgrounds = tuple(
             BackgroundLayer(
                 path=layer.path,
                 z_index=layer.z_index,
                 parallax=layer.parallax,
-                scroll_x=bg_scroll_base * max(layer.parallax, 0.05) if walk_path else layer.scroll_x,
+                scroll_x=(-facing * scroll_speed * max(layer.parallax, 0.05))
+                if walk_path
+                else layer.scroll_x,
                 scroll_y=layer.scroll_y,
                 repeat_x=True if walk_path else layer.repeat_x,
                 repeat_y=layer.repeat_y,
@@ -210,39 +202,39 @@ class VideoGenerationPipeline:
             for layer in scene.backgrounds
         )
 
+        screen_x = scene.width * 0.40
+        screen_y = scene.height * 0.72
+
         for i in range(n):
             t = i * dt
             viseme, jaw = sample_viseme_at(visemes, t)
 
             if walk_path:
-                pts = [tuple(p) for p in walk_path]  # type: ignore[arg-type]
-                (wx, wy), heading, dist = path_position(t, pts, speed=walk_speed)
-                facing = facing_from_heading(heading)
-                bones = walk_cycle_pose(
-                    t, stride=stride, bob_amp=bob_amp, cycle_duration=cycle
+                gw = grounded_walk(
+                    t,
+                    step_length=step_length,
+                    cycle=cycle,
+                    bob_amp=bob_amp,
+                    facing=facing,
                 )
-                if keep_centered:
-                    rx, ry = screen_x, screen_y
-                else:
-                    rx, ry = wx, wy
-                # store facing in scale sign convention via root_rotation or custom:
-                # use root_rotation_deg: 0 = right, 180 = left
+                bones = gw["bones"]
+                rx, ry = (screen_x, screen_y) if keep_centered else (
+                    screen_x + gw["body_world_x"] * 0.0,
+                    screen_y,
+                )
                 root_rot = 0.0 if facing > 0 else 180.0
             else:
+                bones = {}
                 rx, ry = scene.width / 2, screen_y
                 root_rot = 0.0
-                bones = {}
                 facing = 1.0
 
-            bob = head_bob(t, amplitude=3.0, freq=1.0 / max(cycle, 0.1))
+            # Subtle talk head bob on top of walk
+            talk_bob = head_bob(t, amplitude=2.0, freq=2.5)
             head_tf = bones.get("head", Affine.identity())
-            bones["head"] = head_tf.compose(Affine.translate(0.0, bob))
+            bones["head"] = head_tf.compose(Affine.translate(0.0, talk_bob))
 
-            # Camera follows world distance so parallax keeps working
-            cam = camera_at(t, scene.actions, CameraState())
-            if walk_path and keep_centered:
-                # world scrolled via scroll_x; camera can stay 0
-                cam = CameraState(x=0.0, y=0.0, zoom=1.0)
+            cam = CameraState()
 
             frames.append(
                 FrameState(
@@ -253,7 +245,7 @@ class VideoGenerationPipeline:
                     bone_transforms=bones,
                     root_position=(rx, ry),
                     root_rotation_deg=root_rot,
-                    scale=char.default_scale * facing,  # negative scale = flip
+                    scale=char.default_scale * facing,
                     camera=cam,
                 )
             )

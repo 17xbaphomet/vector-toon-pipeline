@@ -22,7 +22,7 @@
     {"id": "right_forearm", "parent_id": "right_upper_arm", "pivot_x": 90, "pivot_y": 160, "layer_id": "right_forearm", "min_angle_deg": -90, "max_angle_deg": 0}
   ],
   "rules": [
-    {"type": "walk", "params": {"stride": 28, "cycle": 0.55, "bob_amp": 5}},
+    {"type": "walk", "params": {"step_length": 55, "cycle": 0.6, "bob_amp": 4}},
     {"type": "jaw", "params": {"bone": "jaw", "scale": 1.0}},
     {"type": "bob", "params": {"bone": "head", "amp": 3, "freq": 1.8}}
   ]
