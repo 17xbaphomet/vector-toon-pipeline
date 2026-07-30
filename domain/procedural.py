@@ -34,6 +34,7 @@ def _two_bone_ik(
     thigh_len: float = THIGH_LEN,
     shin_len: float = SHIN_LEN,
 ) -> tuple[float, float, tuple[float, float]]:
+    """2-bone IK. Knee bends posterior (behind the hip→foot line)."""
     dx = foot[0] - hip[0]
     dy = foot[1] - hip[1]
     dist = math.hypot(dx, dy)
@@ -48,7 +49,8 @@ def _two_bone_ik(
     target = math.degrees(math.atan2(dx, dy))
     cos_a = (thigh_len ** 2 + dist ** 2 - shin_len ** 2) / (2 * thigh_len * dist)
     a = math.degrees(math.acos(_clamp(cos_a, -1.0, 1.0)))
-    thigh_ang = target - a
+    # Knee posterior: +a (was -a → inverted bend)
+    thigh_ang = target + a
     rad = math.radians(thigh_ang)
     knee = (hip[0] + math.sin(rad) * thigh_len, hip[1] + math.cos(rad) * thigh_len)
     shin_ang = math.degrees(math.atan2(foot[0] - knee[0], foot[1] - knee[1]))
@@ -66,7 +68,6 @@ def grounded_walk(
     bob_amp: float = 3.5,
     facing: float = 1.0,
 ) -> dict:
-    """Grounded walk — IK angles as computed (no post-flip). Movement was good."""
     step_period = cycle / 2.0
     scroll_speed = step_length / step_period
     body_world_x = scroll_speed * t
@@ -98,15 +99,12 @@ def grounded_walk(
     l_th, l_sh, _ = _two_bone_ik(hip, left_foot, thigh_len, shin_len)
     r_th, r_sh, _ = _two_bone_ik(hip, right_foot, thigh_len, shin_len)
 
-    # Arms: opposite phase to legs (natural walk)
-    # When left leg forward (+), left arm goes back (-)
+    # Arms opposite phase to legs
     l_ua = -0.65 * l_th
     r_ua = -0.65 * r_th
-    # Elbow: slight bend relative to upper arm (always flexed a bit)
-    # absolute forearm angle = upper + relative flex toward body front
-    # relative flex ≈ -40° keeps hand in front of back-swung arm naturally
-    l_fa = l_ua - 40.0
-    r_fa = r_ua - 40.0
+    # Elbow flex polarity flipped (was -40 → inverted)
+    l_fa = l_ua + 40.0
+    r_fa = r_ua + 40.0
 
     bones = {
         "body": Affine.translate(0.0, bob),
