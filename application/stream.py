@@ -1,4 +1,4 @@
-"""Continuous real-time stream with German landscape zones."""
+"""Continuous stream: base landscape + walk-into overlays, ground-locked signs."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import io
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Iterator, Sequence
 
 from PIL import Image, ImageDraw, ImageFont
@@ -13,7 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.procedural import grounded_walk, head_bob
 from domain.value_objects import Affine, CameraState, Viseme
-from domain.zones import ZoneSequence, default_german_tour
+from domain.zones import LandscapeRoute, Overlay, generate_route
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
 
 
@@ -28,11 +29,11 @@ class StreamConfig:
     scale: float = 1.15
     character_id: str = "bob"
     duration: float | None = None
-    fade_s: float = 1.2
+    route_seed: int | None = 42
 
 
 class ContinuousWalkStream:
-    """Live walk + zone landscapes + Ortsschild transitions."""
+    """Live walk over continuous countryside with overlay towns/forest."""
 
     def __init__(
         self,
@@ -40,7 +41,7 @@ class ContinuousWalkStream:
         renderer: PillowCutoutRenderer,
         rig: CharacterRig,
         config: StreamConfig | None = None,
-        zones: ZoneSequence | None = None,
+        route: LandscapeRoute | None = None,
     ) -> None:
         self.scene = scene
         self.renderer = renderer
@@ -52,13 +53,17 @@ class ContinuousWalkStream:
             scale=getattr(rig, "default_scale", 1.15),
             character_id=rig.id,
         )
-        self.zones = zones or default_german_tour()
+        self.route = route or generate_route(
+            length=30000.0, seed=self.cfg.route_seed
+        )
         self._t0 = time.perf_counter()
         self._running = False
         sample = grounded_walk(
             0.0, step_length=self.cfg.step_length, cycle=self.cfg.cycle
         )
         self._scroll_speed = sample["scroll_speed"]
+        self._char_screen_x = self.cfg.width * 0.40
+        self._char_screen_y = self.cfg.height * 0.82
 
     def _compose_state(self, t: float) -> FrameState:
         gw = grounded_walk(
@@ -77,56 +82,98 @@ class ContinuousWalkStream:
             viseme=Viseme.X,
             jaw_open=0.0,
             bone_transforms=bones,
-            root_position=(self.cfg.width * 0.40, self.cfg.height * 0.82),
+            root_position=(self._char_screen_x, self._char_screen_y),
             root_rotation_deg=0.0 if self.cfg.facing > 0 else 180.0,
             scale=self.cfg.scale * self.cfg.facing,
             camera=CameraState(),
         )
 
-    def _blend_images(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
-        t = max(0.0, min(1.0, t))
-        return Image.blend(a.convert("RGB"), b.convert("RGB"), t)
+    def _world_to_screen_x(self, world_x: float, body_world_x: float) -> float:
+        """Ground-locked: object stays planted on the scrolling ground plane."""
+        return self._char_screen_x + (world_x - body_world_x) * self.cfg.facing
+
+    def _draw_overlay(
+        self,
+        canvas: Image.Image,
+        overlay: Overlay,
+        body_world_x: float,
+    ) -> Image.Image:
+        """Blit overlay mid art with left edge locked to overlay.start in world space."""
+        layers = self.route.overlay_layers(
+            overlay.kind, self._scroll_speed, self.cfg.facing
+        )
+        result = canvas.convert("RGBA")
+        for layer in layers:
+            path = Path(layer.path)
+            if not path.is_file():
+                continue
+            img = self.renderer._svg_to_pil(path)
+            sx = self._world_to_screen_x(overlay.start, body_world_x)
+            sy = 0
+            target_w = max(200, int(overlay.width))
+            if img.width > 0 and abs(img.width - target_w) > 50:
+                scale = target_w / img.width
+                nh = max(1, int(img.height * scale))
+                img = img.resize((target_w, nh), Image.Resampling.LANCZOS)
+            if sx + img.width < -50 or sx > self.cfg.width + 50:
+                continue
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            tmp = Image.new("RGBA", result.size, (0, 0, 0, 0))
+            tmp.alpha_composite(img, (int(sx), int(sy)))
+            result = Image.alpha_composite(result, tmp)
+        return result.convert("RGB")
 
     def _draw_ortsschild(
-        self, img: Image.Image, text: str, alpha: float = 1.0
+        self,
+        img: Image.Image,
+        text: str,
+        screen_x: float,
+        ground_y: float,
     ) -> Image.Image:
-        if alpha <= 0.01:
+        """Ortsschild planted on the ground — post reaches ground_y, never floats."""
+        if screen_x < -80 or screen_x > img.width + 80:
             return img
         overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-        cx, cy = int(img.width * 0.72), int(img.height * 0.55)
-        w, h = 160, 56
-        x0, y0 = cx - w // 2, cy - h // 2
+        w, h = 150, 50
+        post_h = 55
+        post_top = ground_y - post_h
+        plate_bottom = post_top + 6
+        plate_top = plate_bottom - h
+        cx = int(screen_x)
+
         draw.rectangle(
-            [cx - 4, cy + h // 2 - 4, cx + 4, cy + h // 2 + 40],
-            fill=(90, 90, 90, 230),
+            [cx - 4, int(post_top), cx + 4, int(ground_y)],
+            fill=(90, 90, 90, 255),
         )
+        x0 = cx - w // 2
+        y0 = int(plate_top)
         draw.rounded_rectangle(
             [x0, y0, x0 + w, y0 + h],
             radius=4,
-            fill=(245, 245, 245, 240),
+            fill=(245, 245, 245, 255),
             outline=(30, 30, 30, 255),
             width=3,
         )
         draw.rounded_rectangle(
-            [x0 + 5, y0 + 5, x0 + w - 5, y0 + h - 5],
+            [x0 + 4, y0 + 4, x0 + w - 4, y0 + h - 4],
             radius=2,
-            outline=(30, 30, 30, 200),
+            outline=(30, 30, 30, 220),
             width=1,
         )
         try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
         except Exception:
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         draw.text(
-            (cx - tw // 2, cy - th // 2 - 2), text, fill=(20, 20, 20, 255), font=font
+            (cx - tw // 2, y0 + (h - th) // 2 - 1),
+            text,
+            fill=(20, 20, 20, 255),
+            font=font,
         )
-        if alpha < 1.0:
-            r, g, b, a = overlay.split()
-            a = a.point(lambda p: int(p * alpha))
-            overlay = Image.merge("RGBA", (r, g, b, a))
         return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
     def frames(self) -> Iterator[Image.Image]:
@@ -135,6 +182,7 @@ class ContinuousWalkStream:
         dt = 1.0 / max(self.cfg.fps, 1.0)
         frame_i = 0
         facing = self.cfg.facing
+        base = self.route.base_layers(self._scroll_speed, facing)
 
         while self._running:
             t = frame_i * dt
@@ -148,36 +196,25 @@ class ContinuousWalkStream:
                 time.sleep(sleep)
 
             state = self._compose_state(t)
-            distance = self._scroll_speed * t
+            body_world_x = self._scroll_speed * t
 
-            cur, nxt, blend = self.zones.active_blend(
-                distance, self._scroll_speed, self.cfg.fade_s
-            )
-            layers_a = self.zones.layers_for(cur.zone, self._scroll_speed, facing)
+            # 1) Continuous base countryside
             img = self.renderer.render_image(
                 state,
                 self.rig,
                 (self.cfg.width, self.cfg.height),
-                backgrounds=layers_a,
+                backgrounds=base,
             )
 
-            if nxt is not None and blend > 0.0:
-                layers_b = self.zones.layers_for(nxt.zone, self._scroll_speed, facing)
-                img_b = self.renderer.render_image(
-                    state,
-                    self.rig,
-                    (self.cfg.width, self.cfg.height),
-                    backgrounds=layers_b,
-                )
-                img = self._blend_images(img, img_b, blend)
+            # 2) Walk-into overlays — no fade
+            for ov in self.route.active_overlays(body_world_x):
+                img = self._draw_overlay(img, ov, body_world_x)
 
-            for ev in self.zones.transitions():
-                window = self._scroll_speed * 2.5
-                d = abs(distance - ev.at_distance)
-                if d < window and ev.show_sign:
-                    alpha = max(0.0, 1.0 - d / window)
-                    img = self._draw_ortsschild(img, ev.sign_text, alpha=alpha)
-                    break
+            # 3) Ground-locked Ortsschild at overlay entrances
+            ground_y = self._char_screen_y
+            for ov in self.route.active_overlays(body_world_x, margin=400):
+                sx = self._world_to_screen_x(ov.sign_world_x, body_world_x)
+                img = self._draw_ortsschild(img, ov.sign_text, sx, ground_y)
 
             yield img
             frame_i += 1
@@ -242,8 +279,15 @@ def run_mjpeg_server(
                 pass
 
     server = HTTPServer((host, port), Handler)
+    n = len(stream.route.overlays)
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
-    print("Zones: Felder → Landstraße → Musterdorf → Stadtwald → Neustadt → Felder…")
+    print(f"Route: continuous countryside + {n} randomized overlays (no fade)")
+    for ov in stream.route.overlays[:8]:
+        print(
+            f"  · {ov.kind.value:6s}  '{ov.sign_text}'  @ world {ov.start:.0f}–{ov.end:.0f}"
+        )
+    if n > 8:
+        print(f"  … +{n - 8} more")
     return server
 
 
