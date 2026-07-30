@@ -1,4 +1,4 @@
-"""Stream: real south-facing celestial sky + landscape walk + random features."""
+"""Stream: real south-facing celestial sky + landscape walk + depth-layered features."""
 
 from __future__ import annotations
 
@@ -94,8 +94,10 @@ class ContinuousWalkStream:
             camera=CameraState(),
         )
 
-    def _world_to_screen_x(self, world_x: float, body_x: float) -> float:
-        return self._char_sx + (world_x - body_x) * self.cfg.facing
+    def _world_to_screen_x(
+        self, world_x: float, body_x: float, parallax: float = 1.0
+    ) -> float:
+        return self._char_sx + (world_x - body_x) * self.cfg.facing * parallax
 
     def _make_sky_canvas(self, cel) -> Image.Image:
         w, h = self.cfg.width, self.cfg.height
@@ -190,25 +192,40 @@ class ContinuousWalkStream:
         return rgb
 
     def _blit_world_art(
-        self, canvas: Image.Image, path: Path, start: float, end: float, body_x: float
+        self,
+        canvas: Image.Image,
+        path: Path,
+        start: float,
+        end: float,
+        body_x: float,
+        *,
+        parallax: float = 1.0,
+        scale: float = 1.0,
+        y_offset: float = 0.0,
     ) -> Image.Image:
-        """Generic world-anchored transparent art strip."""
+        """World-anchored art with optional depth (parallax / scale / vertical lift)."""
         if not path.is_file():
             return canvas
-        left = self._world_to_screen_x(start, body_x)
-        right = self._world_to_screen_x(end, body_x)
+        left = self._world_to_screen_x(start, body_x, parallax)
+        right = self._world_to_screen_x(end, body_x, parallax)
         if self.cfg.facing < 0:
             left, right = right, left
         if right < -40 or left > self.cfg.width + 40:
             return canvas
+
         art = self.renderer._svg_to_pil(path)
         panel_w = max(1, int(abs(right - left)))
-        scaled = art.resize((panel_w, self.cfg.height), Image.Resampling.LANCZOS)
+        panel_h = max(1, int(self.cfg.height * scale))
+        scaled = art.resize((panel_w, panel_h), Image.Resampling.LANCZOS)
         if scaled.mode != "RGBA":
             scaled = scaled.convert("RGBA")
+
+        # Anchor bottom of art near ground band; lift toward horizon when far
+        y = int(self.cfg.height - panel_h + y_offset)
+
         result = canvas.convert("RGBA")
         tmp = Image.new("RGBA", result.size, (0, 0, 0, 0))
-        tmp.paste(scaled, (int(left), 0), scaled)
+        tmp.paste(scaled, (int(left), y), scaled)
         return Image.alpha_composite(result, tmp)
 
     def _draw_objects(self, canvas: Image.Image, ov: Overlay, body_x: float) -> Image.Image:
@@ -218,7 +235,14 @@ class ContinuousWalkStream:
 
     def _draw_feature(self, canvas: Image.Image, feat: Feature, body_x: float) -> Image.Image:
         return self._blit_world_art(
-            canvas, self.route.feature_object_path(feat.kind), feat.start, feat.end, body_x
+            canvas,
+            self.route.feature_object_path(feat.kind),
+            feat.start,
+            feat.end,
+            body_x,
+            parallax=feat.parallax,
+            scale=feat.scale,
+            y_offset=feat.y_offset,
         )
 
     def _draw_ortsschild(
@@ -276,11 +300,10 @@ class ContinuousWalkStream:
             canvas = self._draw_sun(canvas, cel)
             canvas = self._composite_landscape(canvas, state, base)
 
-            # Sparse individual features (farms, animals, ruins…)
+            # Features: far → mid → near (sorted in active_features)
             for feat in self.route.active_features(body_x):
                 canvas = self._draw_feature(canvas, feat, body_x)
 
-            # Larger place overlays (dorf / stadt / wald)
             for ov in self.route.active_overlays(body_x):
                 canvas = self._draw_objects(canvas, ov, body_x)
             for ov in self.route.active_overlays(body_x, margin=600):
@@ -378,17 +401,15 @@ def run_mjpeg_server(
     cel = celestial_at(tz=stream.cfg.tz)
     stars = project_stars(cel.local_time, stream.cfg.width, stream.cfg.height)
     n_feat = len(stream.route.features)
-    n_ov = len(stream.route.overlays)
+    depths = {}
+    for f in stream.route.features:
+        depths[f.depth.name] = depths.get(f.depth.name, 0) + 1
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
     print(
-        f"Blick nach Süden (DE) · {cel.local_time.strftime('%Y-%m-%d %H:%M %Z')} · "
-        f"{len(stars)} Sterne · {n_ov} Orte · {n_feat} Landschaftsmerkmale"
+        f"Blick nach Süden · {cel.local_time.strftime('%H:%M %Z')} · "
+        f"{len(stars)} Sterne · {n_feat} Features "
+        f"(near={depths.get('NEAR',0)} mid={depths.get('MID',0)} far={depths.get('FAR',0)})"
     )
-    kinds = {}
-    for f in stream.route.features:
-        kinds[f.kind.value] = kinds.get(f.kind.value, 0) + 1
-    summary = ", ".join(f"{k}×{v}" for k, v in sorted(kinds.items(), key=lambda x: -x[1])[:8])
-    print(f"Features: {summary}")
     return server
 
 
