@@ -1,4 +1,4 @@
-"""German landscapes: continuous base + walk-into overlays (no fade)."""
+"""German landscapes: continuous base + object-only overlays."""
 
 from __future__ import annotations
 
@@ -25,13 +25,6 @@ SIGN_NAMES: dict[ZoneId, list[str]] = {
     ZoneId.DORF: ["Musterdorf", "Kleinhausen", "Bergheim", "Lindenau", "Schönbach"],
     ZoneId.STADT: ["Neustadt", "Altenburg", "Rheinfeld", "Hochstadt", "Mühlheim"],
     ZoneId.WALD: ["Stadtwald", "Eichenforst", "Tannengrund", "Birkenhain"],
-}
-
-# Opaque fill behind overlay art so base never shows through
-OVERLAY_FILL: dict[ZoneId, tuple[int, int, int, int]] = {
-    ZoneId.DORF: (180, 210, 160, 255),
-    ZoneId.STADT: (160, 175, 185, 255),
-    ZoneId.WALD: (45, 80, 40, 255),
 }
 
 
@@ -83,10 +76,9 @@ class LandscapeRoute:
             ),
         )
 
-    def overlay_asset_paths(self, kind: ZoneId) -> list[Path]:
-        """Full stack so overlay fully covers base (sky + mid + ground)."""
-        root = self.assets_root / kind.value
-        return [root / "sky.svg", root / "mid.svg", root / "ground.svg"]
+    def overlay_object_path(self, kind: ZoneId) -> Path:
+        """Transparent mid SVG with only objects (no sky/ground fill)."""
+        return self.assets_root / kind.value / "objects.svg"
 
     def active_overlays(self, distance: float, margin: float = 2000.0) -> list[Overlay]:
         return [
@@ -104,16 +96,9 @@ def generate_route(
     min_width: float = 2500.0,
     max_width: float = 4500.0,
 ) -> LandscapeRoute:
-    """
-    Sparse random overlays. At ~133 px/s:
-      gap 8k–15k  → 60–110 s between places
-      width 2.5k–4.5k → 20–35 s walking through
-    """
     rng = random.Random(seed)
     overlays: list[Overlay] = []
-    # First place after a long open stretch
     x = rng.uniform(5000, 9000)
-
     kinds = [ZoneId.DORF, ZoneId.STADT, ZoneId.WALD]
     while x < length:
         kind = rng.choice(kinds)
@@ -122,7 +107,6 @@ def generate_route(
         text = rng.choice(names)
         overlays.append(Overlay(kind=kind, start=x, width=width, sign_text=text))
         x += width + rng.uniform(min_gap, max_gap)
-
     return LandscapeRoute(overlays=tuple(overlays), seed=seed)
 
 

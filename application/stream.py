@@ -1,4 +1,4 @@
-"""Stream: base → opaque overlays → signs → character (always on top)."""
+"""Stream: base landscape always on; overlays = objects only."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.procedural import grounded_walk, head_bob
 from domain.value_objects import Affine, CameraState, Viseme
-from domain.zones import OVERLAY_FILL, LandscapeRoute, Overlay, generate_route
+from domain.zones import LandscapeRoute, Overlay, generate_route
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
 
 
@@ -89,59 +89,40 @@ class ContinuousWalkStream:
     def _world_to_screen_x(self, world_x: float, body_x: float) -> float:
         return self._char_sx + (world_x - body_x) * self.cfg.facing
 
-    def _draw_overlay(
+    def _draw_objects(
         self, canvas: Image.Image, ov: Overlay, body_x: float
     ) -> Image.Image:
         """
-        Opaque place scenery locked to world span [start, end].
-        Fully covers base inside the span; character is drawn later.
+        Paste transparent object strip (houses/trees/buildings only).
+        No sky/ground fill — base landscape stays visible between objects.
         """
+        path = self.route.overlay_object_path(ov.kind)
+        if not path.is_file():
+            return canvas
+
         left = self._world_to_screen_x(ov.start, body_x)
         right = self._world_to_screen_x(ov.end, body_x)
         if self.cfg.facing < 0:
             left, right = right, left
 
-        # Off-screen cull
-        if right < -20 or left > self.cfg.width + 20:
+        if right < -40 or left > self.cfg.width + 40:
             return canvas
 
-        x0 = int(max(-10, left))
-        x1 = int(min(self.cfg.width + 10, right))
-        if x1 <= x0:
-            return canvas
+        art = self.renderer._svg_to_pil(path)
+        panel_w = max(1, int(abs(right - left)))
+        # Keep aspect: scale width to overlay span, height stays canvas height
+        scaled = art.resize((panel_w, self.cfg.height), Image.Resampling.LANCZOS)
+        if scaled.mode != "RGBA":
+            scaled = scaled.convert("RGBA")
 
         result = canvas.convert("RGBA")
-        panel = Image.new("RGBA", result.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(panel)
-
-        # Opaque fill so base never bleeds through
-        fill = OVERLAY_FILL.get(ov.kind, (100, 100, 100, 255))
-        draw.rectangle([x0, 0, x1, self.cfg.height], fill=fill)
-
-        # Stack sky + mid + ground, scaled to overlay width
-        panel_w = max(1, int(abs(right - left)))
-        for path in self.route.overlay_asset_paths(ov.kind):
-            if not path.is_file():
-                continue
-            art = self.renderer._svg_to_pil(path)
-            if art.width < 1:
-                continue
-            scaled = art.resize(
-                (panel_w, self.cfg.height), Image.Resampling.LANCZOS
-            )
-            if scaled.mode != "RGBA":
-                scaled = scaled.convert("RGBA")
-            # Place so left edge of art sits at world start
-            tmp = Image.new("RGBA", result.size, (0, 0, 0, 0))
-            tmp.paste(scaled, (int(left), 0), scaled)
-            panel = Image.alpha_composite(panel, tmp)
-
-        return Image.alpha_composite(result, panel)
+        tmp = Image.new("RGBA", result.size, (0, 0, 0, 0))
+        tmp.paste(scaled, (int(left), 0), scaled)
+        return Image.alpha_composite(result, tmp)
 
     def _draw_ortsschild(
         self, img: Image.Image, text: str, screen_x: float, ground_y: float
     ) -> Image.Image:
-        """Post footed at ground_y — scrolls with world, never floats."""
         if screen_x < -100 or screen_x > img.width + 100:
             return img
         layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
@@ -200,21 +181,21 @@ class ContinuousWalkStream:
             state = self._compose_state(t)
             body_x = self._scroll_speed * t
 
-            # 1) Base countryside only
+            # 1) Continuous base: sky + landscape + road (always)
             canvas = self.renderer.render_backgrounds(
                 state, (self.cfg.width, self.cfg.height), backgrounds=base
             )
 
-            # 2) Opaque overlays (behind character)
+            # 2) Objects only (houses / trees / buildings) — sky shows through
             for ov in self.route.active_overlays(body_x):
-                canvas = self._draw_overlay(canvas, ov, body_x)
+                canvas = self._draw_objects(canvas, ov, body_x)
 
-            # 3) Ground-locked signs (behind character)
+            # 3) Ground-locked Ortsschild
             for ov in self.route.active_overlays(body_x, margin=600):
                 sx = self._world_to_screen_x(ov.sign_world_x, body_x)
                 canvas = self._draw_ortsschild(canvas, ov.sign_text, sx, self._char_sy)
 
-            # 4) Character always on top
+            # 4) Character on top
             char = self.renderer.render_character(
                 state, self.rig, (self.cfg.width, self.cfg.height)
             )
@@ -286,14 +267,10 @@ def run_mjpeg_server(
     n = len(stream.route.overlays)
     spd = stream._scroll_speed
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
-    print(f"scroll ≈ {spd:.0f} px/s · {n} places · gaps 8k–15k (~1–2 min)")
+    print(f"Objects-only overlays · base sky/landscape always visible · {n} places")
     for ov in stream.route.overlays[:6]:
-        t0 = ov.start / spd
-        t1 = ov.end / spd
-        print(
-            f"  · {ov.kind.value:6s} '{ov.sign_text}'  "
-            f"t={t0:.0f}–{t1:.0f}s  world {ov.start:.0f}–{ov.end:.0f}"
-        )
+        t0, t1 = ov.start / spd, ov.end / spd
+        print(f"  · {ov.kind.value:6s} '{ov.sign_text}'  t={t0:.0f}–{t1:.0f}s")
     if n > 6:
         print(f"  … +{n - 6} more")
     return server

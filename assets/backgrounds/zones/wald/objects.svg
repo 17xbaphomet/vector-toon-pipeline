@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <!-- Transparent — only trees; base landscape shows between trunks -->
+  <g fill="#2D5A27">
+    <ellipse cx="50" cy="220" rx="38" ry="88"/><rect x="44" y="290" width="12" height="55" fill="#5D4037"/>
+    <ellipse cx="130" cy="200" rx="42" ry="95"/><rect x="124" y="280" width="12" height="60" fill="#5D4037"/>
+    <ellipse cx="220" cy="210" rx="48" ry="92"/><rect x="214" y="285" width="12" height="55" fill="#5D4037"/>
+    <ellipse cx="320" cy="195" rx="40" ry="100"/><rect x="314" y="280" width="12" height="60" fill="#5D4037"/>
+    <ellipse cx="410" cy="215" rx="45" ry="90"/><rect x="404" y="290" width="12" height="50" fill="#5D4037"/>
+    <ellipse cx="510" cy="200" rx="50" ry="105"/><rect x="504" y="285" width="12" height="55" fill="#5D4037"/>
+    <ellipse cx="610" cy="210" rx="38" ry="92"/><rect x="604" y="285" width="12" height="55" fill="#5D4037"/>
+    <ellipse cx="700" cy="195" rx="48" ry="100"/><rect x="694" y="280" width="12" height="60" fill="#5D4037"/>
+    <ellipse cx="800" cy="220" rx="42" ry="88"/><rect x="794" y="290" width="12" height="50" fill="#5D4037"/>
+    <ellipse cx="900" cy="200" rx="50" ry="102"/><rect x="894" y="282" width="12" height="58" fill="#5D4037"/>
+    <ellipse cx="1000" cy="215" rx="40" ry="90"/><rect x="994" y="288" width="12" height="52" fill="#5D4037"/>
+    <ellipse cx="1100" cy="198" rx="52" ry="108"/><rect x="1094" y="280" width="12" height="60" fill="#5D4037"/>
+    <ellipse cx="1200" cy="210" rx="44" ry="95"/><rect x="1194" y="285" width="12" height="55" fill="#5D4037"/>
+    <ellipse cx="1300" cy="195" rx="48" ry="100"/><rect x="1294" y="280" width="12" height="60" fill="#5D4037"/>
+    <ellipse cx="1400" cy="218" rx="40" ry="88"/><rect x="1394" y="290" width="12" height="50" fill="#5D4037"/>
+    <ellipse cx="1500" cy="205" rx="46" ry="98"/><rect x="1494" y="285" width="12" height="55" fill="#5D4037"/>
+  </g>
+  <!-- Lighter front trees -->
+  <g fill="#3D7A35" opacity="0.9">
+    <ellipse cx="90" cy="250" rx="28" ry="65"/><rect x="86" y="300" width="8" height="40" fill="#6D4C41"/>
+    <ellipse cx="280" cy="245" rx="32" ry="70"/><rect x="276" y="298" width="8" height="42" fill="#6D4C41"/>
+    <ellipse cx="480" cy="248" rx="26" ry="68"/><rect x="476" y="300" width="8" height="40" fill="#6D4C41"/>
+    <ellipse cx="680" cy="242" rx="30" ry="72"/><rect x="676" y="295" width="8" height="45" fill="#6D4C41"/>
+    <ellipse cx="880" cy="250" rx="28" ry="66"/><rect x="876" y="300" width="8" height="40" fill="#6D4C41"/>
+    <ellipse cx="1080" cy="244" rx="32" ry="70"/><rect x="1076" y="298" width="8" height="42" fill="#6D4C41"/>
+    <ellipse cx="1280" cy="248" rx="27" ry="68"/><rect x="1276" y="300" width="8" height="40" fill="#6D4C41"/>
+    <ellipse cx="1480" cy="245" rx="30" ry="70"/><rect x="1476" y="298" width="8" height="42" fill="#6D4C41"/>
+  </g>
+  <!-- Undergrowth clumps -->
+  <g fill="#4A6B35">
+    <ellipse cx="150" cy="355" rx="22" ry="10"/>
+    <ellipse cx="400" cy="358" rx="28" ry="12"/>
+    <ellipse cx="700" cy="354" rx="20" ry="9"/>
+    <ellipse cx="1000" cy="356" rx="25" ry="11"/>
+    <ellipse cx="1300" cy="355" rx="22" ry="10"/>
+  </g>
+</svg>
