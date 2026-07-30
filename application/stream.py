@@ -100,19 +100,13 @@ class ContinuousWalkStream:
     def _world_to_screen_x(self, world_x: float, body_x: float) -> float:
         return self._char_sx + (world_x - body_x) * self.cfg.facing
 
-    # ── sky (bottom-most layer) ──────────────────────────────────────
-
     def _make_sky_canvas(self, cel) -> Image.Image:
-        """Full-frame sky gradient — behind landscape, objects, character."""
         w, h = self.cfg.width, self.cfg.height
         top, bot = sky_colors(cel)
-        # Horizon band: sky fills entire frame; lower part will be covered by ground art
         sky = Image.new("RGB", (w, h))
         draw = ImageDraw.Draw(sky)
-        # Gradient over full height so no old day-sky shows through gaps
         for y in range(h):
             t = y / max(h - 1, 1)
-            # Stronger top color in upper 55%, blend toward slightly darker near bottom
             if t < 0.55:
                 u = t / 0.55
                 r = int(top[0] + (bot[0] - top[0]) * u)
@@ -141,13 +135,15 @@ class ContinuousWalkStream:
         return Image.alpha_composite(canvas, layer)
 
     def _draw_moon(self, canvas: Image.Image, cel) -> Image.Image:
+        """Lit side opaque; dark side highly transparent so sky shows through by day."""
         pos = alt_az_to_screen(cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height)
         if pos is None:
             return canvas
         x, y = pos
         r = 22
         moon_lit = (230, 230, 210, 240)
-        moon_dark = (30, 32, 50, 220)
+        # Dark side: almost fully transparent — sky bleeds through (no black disc)
+        moon_dark = (230, 230, 210, 18)
         phase = cel.moon_phase
         pa = phase * 2.0 * math.pi
         moon_img = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
@@ -183,16 +179,12 @@ class ContinuousWalkStream:
         return Image.alpha_composite(canvas, layer)
 
     def _apply_grade(self, img: Image.Image, cel) -> Image.Image:
-        """Brightness / saturation / tint over the whole finished frame."""
         grade = scene_grade(cel)
         rgb = img.convert("RGB")
-
         if abs(grade.brightness - 1.0) > 0.01:
             rgb = ImageEnhance.Brightness(rgb).enhance(grade.brightness)
         if abs(grade.saturation - 1.0) > 0.01:
             rgb = ImageEnhance.Color(rgb).enhance(grade.saturation)
-
-        # Additive tint
         if any(abs(v) > 0.005 for v in (grade.tint_r, grade.tint_g, grade.tint_b)):
             import numpy as np
 
@@ -201,7 +193,6 @@ class ContinuousWalkStream:
             arr[..., 1] = np.clip(arr[..., 1] + grade.tint_g * 255, 0, 255)
             arr[..., 2] = np.clip(arr[..., 2] + grade.tint_b * 255, 0, 255)
             rgb = Image.fromarray(arr.astype(np.uint8), "RGB")
-
         return rgb
 
     def _draw_objects(self, canvas: Image.Image, ov: Overlay, body_x: float) -> Image.Image:
@@ -258,7 +249,6 @@ class ContinuousWalkStream:
         self._t0 = time.perf_counter()
         dt = 1.0 / max(self.cfg.fps, 1.0)
         frame_i = 0
-        # mid + ground only — no static sky.svg
         base = self.route.base_layers(self._scroll_speed, self.cfg.facing)
 
         while self._running:
@@ -274,46 +264,28 @@ class ContinuousWalkStream:
             body_x = self._scroll_speed * t
             cel = celestial_at(self._scene_datetime(t), tz=self.cfg.tz)
 
-            # 1) Sky FULL canvas — bottom-most layer
             canvas = self._make_sky_canvas(cel)
             canvas = self._draw_stars(canvas, cel)
             canvas = self._draw_moon(canvas, cel)
             canvas = self._draw_sun(canvas, cel)
-
-            # 2) Landscape (mid + ground) on top of sky
-            land = self.renderer.render_backgrounds(
-                state, (self.cfg.width, self.cfg.height), backgrounds=base
-            )
-            # land has opaque sky-blue fill from renderer default — mask it:
-            # render_backgrounds starts with solid sky color; composite only non-default?
-            # Safer: renderer uses transparent init when we pass a flag — for now
-            # alpha-composite land which includes its fill. Fix by making land
-            # canvas transparent before layers.
             canvas = self._composite_landscape(canvas, state, base)
 
-            # 3) Objects
             for ov in self.route.active_overlays(body_x):
                 canvas = self._draw_objects(canvas, ov, body_x)
-
-            # 4) Signs
             for ov in self.route.active_overlays(body_x, margin=600):
                 sx = self._world_to_screen_x(ov.sign_world_x, body_x)
                 canvas = self._draw_ortsschild(canvas, ov.sign_text, sx, self._char_sy)
 
-            # 5) Character
             char = self.renderer.render_character(
                 state, self.rig, (self.cfg.width, self.cfg.height)
             )
             frame = Image.alpha_composite(canvas.convert("RGBA"), char)
-
-            # 6) Full-scene day/night grade (brightness, saturation, tint)
             frame = self._apply_grade(frame, cel)
 
             yield frame.convert("RGB")
             frame_i += 1
 
     def _composite_landscape(self, sky_canvas, state, base):
-        """Paste scrolling mid/ground onto sky without opaque day-blue fill."""
         from domain.procedural import parallax_offset
         from pathlib import Path
 
