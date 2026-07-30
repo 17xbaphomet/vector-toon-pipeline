@@ -6,7 +6,7 @@ import math
 from typing import Sequence
 
 from .entities import VisemeCue
-from .value_objects import Affine, Viseme
+from .value_objects import Affine, CameraState, Viseme
 
 
 def head_bob(t: float, amplitude: float = 4.0, freq: float = 2.5) -> float:
@@ -28,7 +28,7 @@ def walk_cycle_pose(
     angle = phase * 2 * math.pi
 
     leg_swing = stride * math.sin(angle)
-    arm_swing = stride * 0.7 * math.sin(angle + math.pi)  # opposite
+    arm_swing = stride * 0.7 * math.sin(angle + math.pi)
     body_bob = bob_amp * abs(math.sin(angle))
 
     return {
@@ -52,7 +52,6 @@ def path_position(
     if not path or len(path) < 2:
         return (path[0] if path else (0.0, 0.0)), 0.0
 
-    # Pre-compute segment lengths
     segs: list[tuple[tuple[float, float], tuple[float, float], float]] = []
     total = 0.0
     for a, b in zip(path[:-1], path[1:]):
@@ -86,3 +85,40 @@ def sample_viseme_at(
         if cue.timing.contains(t):
             return cue.value, cue.intensity
     return Viseme.X, 0.0
+
+
+def camera_at(
+    t: float,
+    actions: Sequence,  # SceneAction list; filtered externally for type=="camera"/"pan"
+    default: CameraState | None = None,
+) -> CameraState:
+    """Linear interpolate camera from matching pan/camera actions."""
+    default = default or CameraState()
+    # Simple: find first active camera action
+    for act in actions:
+        if act.type not in ("camera", "pan"):
+            continue
+        if not act.timing.contains(t):
+            continue
+        params = act.params
+        u = (t - act.timing.start) / max(act.timing.duration, 1e-6)
+        fx, fy = params.get("from", (default.x, default.y))
+        tx, ty = params.get("to", (fx, fy))
+        z0 = float(params.get("zoom_from", default.zoom))
+        z1 = float(params.get("zoom_to", z0))
+        return CameraState(
+            x=fx + (tx - fx) * u,
+            y=fy + (ty - fy) * u,
+            zoom=z0 + (z1 - z0) * u,
+        )
+    return default
+
+
+def parallax_offset(
+    camera: CameraState, layer_parallax: float, t: float, scroll_x: float = 0.0, scroll_y: float = 0.0
+) -> tuple[float, float]:
+    """World offset for a background layer given camera + continuous scroll."""
+    return (
+        -camera.x * layer_parallax + scroll_x * t,
+        -camera.y * layer_parallax + scroll_y * t,
+    )

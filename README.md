@@ -4,12 +4,14 @@ Offline, deterministic cartoon video generation pipeline that relies on **vector
 
 **No heavy generative image AI** in the render loop.
 
-## Features (target)
+## Features
 
 - Lip-sync + jaw/head movement driven by **Rhubarb Lip Sync** (Preston Blair 9 shapes)
-- Procedural walk cycles
-- Vehicle / path following ("auto fahren")
-- Layered SVG characters with hierarchical transforms
+- **Offline TTS** via Piper (text → WAV → lipsync)
+- Procedural walk cycles, path following, vehicle drive
+- Multi-layer **parallax backgrounds**
+- Layered SVG characters with hierarchical bone/joint transforms
+- **Character editor** (Streamlit) for joint placement + movement rules
 - Timeline-based scene composition (JSON)
 - Frame rendering → FFmpeg MP4
 
@@ -21,53 +23,66 @@ vector-toon-pipeline/
 ├── application/             # VideoGenerationPipeline (FSM) + exceptions
 ├── infrastructure/
 │   ├── lipsync/             # Rhubarb + energy fallback
-│   ├── renderers/           # PillowCutoutRenderer (SVG → PNG)
+│   ├── tts/                 # Piper TTS adapter
+│   ├── renderers/           # PillowCutoutRenderer (SVG → PNG + parallax)
 │   ├── encoders/            # FFmpegEncoder
 │   └── assets/              # FileCharacterAssetRepository
-├── assets/characters/bob/   # sample geometric character + mouth shapes
+├── tools/
+│   └── character_editor.py  # Streamlit joint / rule editor
+├── assets/characters/bob/
 ├── examples/
 ├── cli.py
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
 
 ## Status (GitHub Guardian)
 
-- [x] Domain models (Viseme, Affine, FrameState, CharacterRig, SceneSpec, interfaces)
+- [x] Domain models (Viseme, Affine, FrameState, CharacterRig, SceneSpec)
+- [x] BoneDef, MovementRule, BackgroundLayer, CameraState
+- [x] TTSProvider interface
 - [x] Rhubarb VisemeExtractor (+ energy fallback)
 - [x] Application layer + Pipeline FSM
-- [x] domain/procedural.py (head_bob, walk_cycle, path_follower, sample_viseme)
-- [x] MVP FrameRenderer (Pillow + cairosvg mouth swap + head bob)
+- [x] domain/procedural.py (head_bob, walk_cycle, path_follower, parallax)
+- [x] MVP FrameRenderer (mouth swap + head bob)
 - [x] FFmpeg encoder
-- [x] Sample character "bob" (geometric SVG + 9 mouth shapes)
+- [x] Sample character "bob"
 - [x] CLI wiring
+- [ ] Piper TTS adapter
+- [ ] Streamlit character editor (joint placer)
+- [ ] Parallax multi-layer backgrounds in renderer
 - [ ] Full walk/drive actions in compose stage
-- [ ] Better layered SVG hierarchy / bone parenting
-- [ ] Headless browser renderer option (playwright)
 
 ## Install
 
 ```bash
 pip install -r requirements.txt
-# Rhubarb Lip Sync binary (optional but recommended):
+# Rhubarb binary (optional but recommended):
 # https://github.com/DanielSWolf/rhubarb-lip-sync/releases
-# FFmpeg must be on PATH
+# FFmpeg on PATH
+# Piper voices: python -m piper.download_voices en_US-lessac-medium
 ```
 
-## Quick start (once you have a short .wav)
+## Quick start
 
 ```bash
-# put a sample.wav next to the demo scene or edit the path
+# From text (TTS → lipsync → video)
+python cli.py examples/demo_scene.json -o out.mp4 --text "Hello, I am Bob the cartoon."
+
+# From existing audio
 python cli.py examples/demo_scene.json -o out.mp4 --work-dir ./work
+
+# Character editor
+streamlit run tools/character_editor.py
 ```
 
 ## Pipeline stages
 
-1. Parse SceneSpec + load CharacterRig assets
-2. Audio → VisemeCue list (Rhubarb or energy fallback)
-3. Generate procedural clips (walk, drive, head bob)
-4. Compose timeline → sequence of FrameState
-5. Render frames (SVG layers + transforms → PNG)
-6. Encode MP4 + original audio
+1. (Optional) TTS: dialogue → WAV
+2. Parse SceneSpec + load CharacterRig (bones + rules)
+3. Audio → VisemeCue list (Rhubarb)
+4. Generate procedural clips (walk, drive, head bob) from MovementRules + SceneActions
+5. Compose timeline → FrameState sequence (incl. camera + parallax)
+6. Render frames (background layers → character layers → mouth)
+7. Encode MP4 + audio
 
 Everything is data-driven and offline.

@@ -14,6 +14,18 @@ class VisemeExtractor(ABC):
         """Return timed viseme cues for the given audio."""
 
 
+class TTSProvider(ABC):
+    """Offline text-to-speech. Produces WAV suitable for Rhubarb."""
+
+    @abstractmethod
+    def synthesize(self, text: str, voice_id: str, out_path: Path) -> Path:
+        """Write speech audio to out_path and return it."""
+
+    @abstractmethod
+    def list_voices(self) -> Sequence[str]:
+        ...
+
+
 class CharacterAssetRepository(ABC):
     @abstractmethod
     def load(self, character_id: str) -> CharacterRig:
@@ -22,6 +34,10 @@ class CharacterAssetRepository(ABC):
     @abstractmethod
     def list_ids(self) -> Sequence[str]:
         ...
+
+    @abstractmethod
+    def save(self, rig: CharacterRig) -> None:
+        """Persist character (used by the editor)."""
 
 
 class FrameRenderer(ABC):

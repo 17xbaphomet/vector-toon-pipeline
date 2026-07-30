@@ -4,14 +4,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from .value_objects import Affine, Timing, Viseme
+from .value_objects import (
+    Affine,
+    BackgroundLayer,
+    BoneDef,
+    CameraState,
+    MovementRule,
+    Timing,
+    Viseme,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class VisemeCue:
     timing: Timing
     value: Viseme
-    # optional intensity for jaw openness 0..1 (Rhubarb does not provide; can be derived)
     intensity: float = 1.0
 
 
@@ -33,6 +40,7 @@ class FrameState:
     root_position: tuple[float, float]
     root_rotation_deg: float
     scale: float = 1.0
+    camera: CameraState = field(default_factory=CameraState)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +49,6 @@ class AnimationClip:
 
     name: str
     duration: float
-    # key times -> bone_id -> Affine  (or denser samples)
     samples: Sequence[tuple[float, Mapping[str, Affine]]]
 
 
@@ -49,20 +56,23 @@ class AnimationClip:
 class CharacterRig:
     id: str
     base_svg: Path
-    # layer / group ids inside SVG or separate files
     layer_paths: Mapping[str, Path]  # e.g. "head", "body", "left_leg"
     mouth_shapes: Mapping[Viseme, Path]
-    # optional bone hierarchy for later skeletal
     bone_order: Sequence[str] = ()
+    bones: Sequence[BoneDef] = ()
+    rules: Sequence[MovementRule] = ()
     default_scale: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
 class SceneAction:
-    type: str  # "talk" | "walk" | "drive" | "idle" | "camera"
+    type: str  # "talk" | "walk" | "drive" | "idle" | "camera" | "pan"
     timing: Timing
     character_id: str | None = None
     params: Mapping[str, object] = field(default_factory=dict)
+    # walk params: path=[(x,y),...], speed=80
+    # drive params: path=..., speed=...
+    # camera params: from=(x,y), to=(x,y), zoom=1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +81,10 @@ class SceneSpec:
     height: int
     fps: int
     duration: float
-    audio_path: Path
+    audio_path: Path | None  # None if dialogue will be synthesized
     characters: Sequence[CharacterRig]
     actions: Sequence[SceneAction]
-    background: Path | None = None
+    backgrounds: Sequence[BackgroundLayer] = ()
+    dialogue: str | None = None  # if set, TTS runs before lipsync
+    voice_id: str = "en_US-lessac-medium"
+    background: Path | None = None  # legacy single bg (prefer backgrounds)

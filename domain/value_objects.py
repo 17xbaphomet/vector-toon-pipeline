@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 import math
+from typing import Mapping, Sequence
 
 
 class Viseme(str, Enum):
@@ -61,7 +63,6 @@ class Affine:
     def rotate(cls, degrees: float, cx: float = 0.0, cy: float = 0.0) -> Affine:
         rad = math.radians(degrees)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
-        # rotate around (cx, cy)
         return (
             cls.translate(cx, cy)
             .compose(cls(a=cos_a, b=sin_a, c=-sin_a, d=cos_a))
@@ -80,3 +81,67 @@ class Timing:
 
     def contains(self, t: float) -> bool:
         return self.start <= t < self.end
+
+
+# ---------------------------------------------------------------------------
+# Rigging / joints
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BoneDef:
+    """One joint in a character skeleton."""
+
+    id: str
+    parent_id: str | None  # None = root
+    pivot_x: float  # local pivot in SVG coords
+    pivot_y: float
+    layer_id: str | None = None  # SVG group / file this bone drives
+    min_angle_deg: float = -180.0
+    max_angle_deg: float = 180.0
+    length: float = 0.0  # optional, for IK later
+
+
+class MovementRuleType(str, Enum):
+    WALK = "walk"
+    JAW = "jaw"
+    BOB = "bob"
+    LOOK = "look"
+    IDLE = "idle"
+    CUSTOM = "custom"
+
+
+@dataclass(frozen=True, slots=True)
+class MovementRule:
+    """Declarative movement behaviour attached to a character."""
+
+    type: MovementRuleType
+    params: Mapping[str, float | str | bool] = field(default_factory=dict)
+    # e.g. walk: {"stride": 18, "cycle": 0.6, "bob_amp": 6}
+    #      jaw:  {"bone": "jaw", "scale": 1.0}
+    #      bob:  {"bone": "head", "amp": 4, "freq": 2.5}
+
+
+# ---------------------------------------------------------------------------
+# Camera + backgrounds (parallax)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CameraState:
+    x: float = 0.0
+    y: float = 0.0
+    zoom: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundLayer:
+    """One parallax layer."""
+
+    path: Path
+    z_index: int = 0
+    parallax: float = 1.0  # 0 = fixed, 1 = moves with camera, >1 = foreground
+    scroll_x: float = 0.0  # extra continuous scroll speed (px/s)
+    scroll_y: float = 0.0
+    repeat_x: bool = False
+    repeat_y: bool = False
