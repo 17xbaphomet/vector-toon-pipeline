@@ -67,6 +67,11 @@ def grounded_walk(
     bob_amp: float = 3.5,
     facing: float = 1.0,
 ) -> dict:
+    """
+    Grounded walk. Positive facing = walk toward +x (right on screen).
+
+    Foot targets progress so the swing foot moves FORWARD (+x when facing right).
+    """
     step_period = cycle / 2.0
     scroll_speed = step_length / step_period
     body_world_x = scroll_speed * t
@@ -89,6 +94,7 @@ def grounded_walk(
     bob = bob_amp * abs(math.sin(math.pi * total_steps))
 
     def to_local(wx: float, wy: float) -> tuple[float, float]:
+        # Local X: positive = forward in facing direction
         return ((wx - body_world_x) * facing, wy)
 
     left_foot = to_local(left_wx, left_wy)
@@ -96,6 +102,12 @@ def grounded_walk(
     hip = (0.0, -(hip_height - bob))
     l_th, l_sh, _ = _two_bone_ik(hip, left_foot, thigh_len, shin_len)
     r_th, r_sh, _ = _two_bone_ik(hip, right_foot, thigh_len, shin_len)
+
+    # Invert X angles so forward swing matches screen +x when facing right.
+    # (User reported X direction wrong — negate hip/shin world angles.)
+    l_th, l_sh = -l_th, -l_sh
+    r_th, r_sh = -r_th, -r_sh
+
     l_ua, r_ua = -0.55 * l_th, -0.55 * r_th
     l_fa, r_fa = l_ua - 35.0, r_ua - 35.0
     bones = {

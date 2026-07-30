@@ -139,7 +139,7 @@ class VideoGenerationPipeline:
     ) -> tuple[list[FrameState], Sequence[BackgroundLayer]]:
         """
         Grounded walk: stance foot locked in world space,
-        background scrolls at exact body velocity → no foot sliding.
+        background scrolls opposite to facing so character appears to walk forward.
         """
         self.on_progress(self.state, "Composing FrameState sequence")
         frames: list[FrameState] = []
@@ -159,23 +159,26 @@ class VideoGenerationPipeline:
         walk_path = walk_params.get("path")
         keep_centered = bool(walk_params.get("keep_centered", True))
 
-        # Stride parameters from character rules or action
-        step_length = float(walk_params.get("step_length", 55))
+        step_length = float(walk_params.get("step_length", 40))
         cycle = float(walk_params.get("cycle", 0.6))
-        bob_amp = 4.0
+        bob_amp = 3.5
         for rule in getattr(rig, "rules", ()):
             if rule.type.value == "walk":
-                step_length = float(rule.params.get("step_length", rule.params.get("stride", step_length) * 2))
+                step_length = float(
+                    rule.params.get(
+                        "step_length",
+                        rule.params.get("stride", step_length),
+                    )
+                )
                 cycle = float(rule.params.get("cycle", cycle))
                 bob_amp = float(rule.params.get("bob_amp", bob_amp))
 
-        # Facing from path direction
+        # Facing from path: left→right path = face right (+1)
         facing = 1.0
         if walk_path and len(walk_path) >= 2:
             p0, p1 = walk_path[0], walk_path[-1]
             facing = 1.0 if (p1[0] - p0[0]) >= 0 else -1.0
 
-        # Sample once to get scroll_speed from grounded model
         sample = grounded_walk(
             0.0,
             step_length=step_length,
@@ -183,10 +186,12 @@ class VideoGenerationPipeline:
             bob_amp=bob_amp,
             facing=facing,
         )
-        scroll_speed = sample["scroll_speed"]  # body velocity world units/s
+        scroll_speed = sample["scroll_speed"]
 
-        # Background moves OPPOSITE to walk; rate = body velocity * parallax
-        # scroll_x is px/s added as scroll_x * t in parallax_offset
+        # Background scrolls OPPOSITE to walk direction:
+        # facing right (+1) → bg moves left → character appears to walk right
+        # Was inverted for the user — use +facing so scroll matches visual walk dir
+        # parallax_offset: ox = scroll_x * t; negative scroll_x moves bg left on screen
         backgrounds = tuple(
             BackgroundLayer(
                 path=layer.path,
@@ -218,10 +223,7 @@ class VideoGenerationPipeline:
                     facing=facing,
                 )
                 bones = gw["bones"]
-                rx, ry = (screen_x, screen_y) if keep_centered else (
-                    screen_x + gw["body_world_x"] * 0.0,
-                    screen_y,
-                )
+                rx, ry = (screen_x, screen_y) if keep_centered else (screen_x, screen_y)
                 root_rot = 0.0 if facing > 0 else 180.0
             else:
                 bones = {}
@@ -229,12 +231,9 @@ class VideoGenerationPipeline:
                 root_rot = 0.0
                 facing = 1.0
 
-            # Subtle talk head bob on top of walk
             talk_bob = head_bob(t, amplitude=2.0, freq=2.5)
             head_tf = bones.get("head", Affine.identity())
             bones["head"] = head_tf.compose(Affine.translate(0.0, talk_bob))
-
-            cam = CameraState()
 
             frames.append(
                 FrameState(
@@ -246,7 +245,7 @@ class VideoGenerationPipeline:
                     root_position=(rx, ry),
                     root_rotation_deg=root_rot,
                     scale=char.default_scale * facing,
-                    camera=cam,
+                    camera=CameraState(),
                 )
             )
 
