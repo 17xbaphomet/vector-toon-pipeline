@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI entry point for vector-toon-pipeline."""
+"""CLI entry point for vector-toon-pipeline (offline + live stream)."""
 
 from __future__ import annotations
 
@@ -117,14 +117,89 @@ def load_scene(path: Path, text_override: str | None = None, voice: str | None =
     )
 
 
+def run_stream(args, scene) -> None:
+    from infrastructure.assets.file_repo import FileCharacterAssetRepository
+    from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
+    from application.stream import ContinuousWalkStream, StreamConfig, run_mjpeg_server, pipe_to_ffmpeg
+
+    repo = FileCharacterAssetRepository(ROOT / "assets" / "characters")
+    char_id = scene.characters[0].id if scene.characters else "bob"
+    try:
+        rig = repo.load(char_id)
+    except Exception:
+        rig = scene.characters[0]
+
+    walk = {}
+    for a in scene.actions:
+        if a.type == "walk":
+            walk = dict(a.params)
+            break
+
+    facing = 1.0
+    path = walk.get("path")
+    if path and len(path) >= 2:
+        facing = 1.0 if (path[-1][0] - path[0][0]) >= 0 else -1.0
+
+    cfg = StreamConfig(
+        fps=float(scene.fps),
+        width=scene.width,
+        height=scene.height,
+        step_length=float(walk.get("step_length", 40)),
+        cycle=float(walk.get("cycle", 0.6)),
+        facing=facing,
+        scale=float(getattr(rig, "default_scale", 1.15)),
+        character_id=char_id,
+        duration=None if args.stream_duration <= 0 else args.stream_duration,
+    )
+
+    renderer = PillowCutoutRenderer(cache_dir=args.work_dir / "svg_cache")
+    stream = ContinuousWalkStream(scene, renderer, rig, cfg)
+
+    if args.pipe:
+        print(f"Piping live frames → ffmpeg → {args.pipe}")
+        code = pipe_to_ffmpeg(stream, output=str(args.pipe))
+        sys.exit(code)
+
+    server = run_mjpeg_server(stream, host=args.host, port=args.port)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping stream…")
+        stream.stop()
+        server.shutdown()
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Offline vector cartoon video pipeline")
+    parser = argparse.ArgumentParser(
+        description="Vector cartoon pipeline – offline MP4 or live stream"
+    )
     parser.add_argument("scene", type=Path, help="Path to SceneSpec JSON")
     parser.add_argument("-o", "--output", type=Path, default=Path("output.mp4"))
     parser.add_argument("--work-dir", type=Path, default=Path("./work"))
     parser.add_argument("--rhubarb", default="rhubarb", help="Rhubarb binary path")
     parser.add_argument("--text", default=None, help="Override dialogue (triggers TTS)")
     parser.add_argument("--voice", default=None, help="Piper voice id")
+
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Continuous live compute + MJPEG HTTP stream (no offline encode)",
+    )
+    parser.add_argument("--port", type=int, default=8765, help="MJPEG server port")
+    parser.add_argument("--host", default="0.0.0.0", help="MJPEG bind host")
+    parser.add_argument(
+        "--stream-duration",
+        type=float,
+        default=0,
+        help="Max stream seconds (0 = infinite)",
+    )
+    parser.add_argument(
+        "--pipe",
+        type=Path,
+        default=None,
+        help="Pipe live JPEGs into ffmpeg → this output file (instead of HTTP)",
+    )
+
     args = parser.parse_args()
 
     if not args.scene.is_file():
@@ -132,8 +207,12 @@ def main() -> None:
         sys.exit(1)
 
     scene = load_scene(args.scene, text_override=args.text, voice=args.voice)
-    pipeline = build_pipeline(args)
 
+    if args.stream or args.pipe:
+        run_stream(args, scene)
+        return
+
+    pipeline = build_pipeline(args)
     print(f"Running pipeline → {args.output}")
     result = pipeline.run(scene, args.output)
     print(f"Done: {result}")
