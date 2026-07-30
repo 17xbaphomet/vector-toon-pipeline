@@ -1,4 +1,4 @@
-"""Frame renderer with rigidly anchored joint chains."""
+"""Frame renderer: SVG torso + procedural capsule limbs (rigid joints)."""
 
 from __future__ import annotations
 
@@ -8,41 +8,36 @@ from pathlib import Path
 from typing import Sequence
 
 import cairosvg
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from domain.entities import CharacterRig, FrameState
 from domain.interfaces import FrameRenderer
-from domain.procedural import parallax_offset
+from domain.procedural import HIP_HEIGHT, SHIN_LEN, THIGH_LEN, parallax_offset
 from domain.value_objects import Affine, BackgroundLayer, Viseme
+
+# Arm lengths (shared with procedural if exported; keep local fallback)
+UPPER_ARM_LEN = 40.0
+FOREARM_LEN = 38.0
 
 
 def _ang(tf: Affine) -> float:
     return math.degrees(math.atan2(tf.b, tf.a))
 
 
-def _offset(angle_deg: float, length: float) -> tuple[float, float]:
-    """Step from a joint along angle (0=down, + = toward +x)."""
+def _dir(angle_deg: float, length: float) -> tuple[float, float]:
     rad = math.radians(angle_deg)
     return math.sin(rad) * length, math.cos(rad) * length
 
 
 class PillowCutoutRenderer(FrameRenderer):
     """
-    Rigid kinematic chains:
+    Torso from SVG; limbs drawn as capsules between joints.
 
-        hip ──thigh_ang, L──► knee ──shin_ang, L──► ankle
-        shoulder ──ua_ang, L──► elbow ──fa_ang, L──► hand
-
-    Every distal joint is computed ONLY from its parent joint.
-    Segment lengths are the single source of truth (must match IK).
+    Joints are shared by construction:
+      knee  = hip + dir(thigh_angle) * THIGH_LEN
+      ankle = knee + dir(shin_angle) * SHIN_LEN
+    Both thigh and shin capsules end/start on the exact same knee pixel.
     """
-
-    # Must match domain/procedural.grounded_walk defaults
-    THIGH = 50.0
-    SHIN = 48.0
-    UPPER = 40.0
-    FORE = 38.0
-    HIP_H = 98.0  # THIGH + SHIN
 
     def __init__(self, cache_dir: Path | None = None) -> None:
         self.cache_dir = Path(cache_dir or "./work/svg_cache")
@@ -68,171 +63,159 @@ class PillowCutoutRenderer(FrameRenderer):
                 )
                 self._paste_tile(canvas, img, int(ox), int(oy), layer.repeat_x)
 
-        cx, cy = state.root_position  # cy ≈ ground under character
+        cx, cy = state.root_position
         flip = state.scale < 0
         s = abs(state.scale) if state.scale else 1.0
         bones = state.bone_transforms
-
         bob = bones.get("body", Affine.identity()).f * s
 
-        # ── Skeleton root anchors (screen space) ──────────────────────
-        # Ground at cy; hip sits HIP_H above ground.
-        hip_y = cy - self.HIP_H * s + bob
-        hip_x = cx
-        # Torso center sits a bit above hip (ellipse mid)
-        torso_x, torso_y = cx, hip_y - 35 * s
-        # Shoulders above hip along torso
-        sh_y = hip_y - 70 * s
-        sh_x = cx
+        # --- skeleton anchors (screen) ---
+        hip_x, hip_y = cx, cy - HIP_HEIGHT * s + bob
+        sh_x, sh_y = cx, hip_y - 70 * s
+        torso_x, torso_y = cx, hip_y - 30 * s
 
-        side = Path(rig.base_svg).parent / "body_side.svg"
-        torso_path = side if side.is_file() else rig.base_svg
-        limbs = Path(rig.base_svg).parent / "limbs"
-
+        side_svg = Path(rig.base_svg).parent / "body_side.svg"
+        torso_path = side_svg if side_svg.is_file() else rig.base_svg
         torso = self._svg_to_pil(torso_path)
         if flip:
             torso = torso.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
 
-        # near/far labels for depth
+        # Colors
+        leg_col = (44, 95, 138, 255)       # #2C5F8A
+        leg_outline = (26, 58, 85, 255)
+        arm_col = (245, 203, 167, 255)     # #F5CBA7
+        arm_outline = (212, 165, 116, 255)
+        foot_col = (26, 26, 26, 255)
+
         if not flip:
-            far = "right"
-            near = "left"
-            far_dx, near_dx = -4.0, 4.0
+            order = ["right", "left"]   # far then near
+            dx = {"right": -5.0, "left": 5.0}
         else:
-            far = "left"
-            near = "right"
-            far_dx, near_dx = -4.0, 4.0
+            order = ["left", "right"]
+            dx = {"left": -5.0, "right": 5.0}
 
-        # 1) FAR limbs (behind torso)
-        self._chain_leg(
-            canvas, limbs, bones, flip, s,
-            hip=(hip_x + far_dx * s, hip_y),
-            side=far,
-        )
-        self._chain_arm(
-            canvas, limbs, bones, flip, s,
-            shoulder=(sh_x + far_dx * s, sh_y),
-            side=far,
-        )
+        # Layer buffer so we can composite far → torso → near
+        far_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        near_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
-        # 2) Torso (anchors stay fixed; limbs attach to same coords)
+        for i, side in enumerate(order):
+            layer = far_layer if i == 0 else near_layer
+            hx = hip_x + dx[side] * s
+            sx = sh_x + dx[side] * s
+
+            # --- Leg angles ---
+            th = _ang(bones.get(f"{side}_thigh") or bones.get(f"{side}_leg", Affine.identity()))
+            shn = _ang(bones.get(f"{side}_shin", Affine.identity()))
+            if flip:
+                th, shn = -th, -shn
+
+            # Rigid FK joints
+            knee = (hx + _dir(th, THIGH_LEN * s)[0], hip_y + _dir(th, THIGH_LEN * s)[1])
+            ankle = (knee[0] + _dir(shn, SHIN_LEN * s)[0], knee[1] + _dir(shn, SHIN_LEN * s)[1])
+
+            self._capsule(layer, (hx, hip_y), knee, 9 * s, leg_col, leg_outline)
+            self._capsule(layer, knee, ankle, 7 * s, leg_col, leg_outline)
+            # foot ellipse at ankle
+            self._foot(layer, ankle, shn, 12 * s, foot_col)
+
+            # --- Arm angles ---
+            ua = _ang(bones.get(f"{side}_upper_arm") or bones.get(f"{side}_arm", Affine.identity()))
+            fa = _ang(bones.get(f"{side}_forearm", Affine.identity()))
+            if flip:
+                ua, fa = -ua, -fa
+
+            elbow = (sx + _dir(ua, UPPER_ARM_LEN * s)[0], sh_y + _dir(ua, UPPER_ARM_LEN * s)[1])
+            hand = (elbow[0] + _dir(fa, FOREARM_LEN * s)[0], elbow[1] + _dir(fa, FOREARM_LEN * s)[1])
+
+            self._capsule(layer, (sx, sh_y), elbow, 6 * s, arm_col, arm_outline)
+            self._capsule(layer, elbow, hand, 5 * s, arm_col, arm_outline)
+            # hand blob
+            self._disk(layer, hand, 6 * s, arm_col)
+
+        # Composite: far limbs → torso → near limbs
+        canvas = Image.alpha_composite(canvas, far_layer)
         self._blit_centered(canvas, torso, torso_x, torso_y, s)
+        canvas = Image.alpha_composite(canvas, near_layer)
 
-        # 3) NEAR limbs (in front)
-        self._chain_leg(
-            canvas, limbs, bones, flip, s,
-            hip=(hip_x + near_dx * s, hip_y),
-            side=near,
-        )
-        self._chain_arm(
-            canvas, limbs, bones, flip, s,
-            shoulder=(sh_x + near_dx * s, sh_y),
-            side=near,
-        )
-
-        # 4) Mouth
-        mouth_path = bones and (
-            rig.mouth_shapes.get(state.viseme) or rig.mouth_shapes.get(Viseme.X)
-        )
+        # Mouth
+        mouth_path = rig.mouth_shapes.get(state.viseme) or rig.mouth_shapes.get(Viseme.X)
         if mouth_path:
             mouth = self._svg_to_pil(mouth_path)
             if flip:
                 mouth = mouth.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
             head_bob = bones.get("head", Affine.identity()).f * s
             mx = cx + (18 if not flip else -18) * s
-            my = sh_y - 30 * s + head_bob
+            my = sh_y - 28 * s + head_bob
             self._blit_centered(canvas, mouth, mx, my, s * 0.65)
 
         out = self.cache_dir / f"frame_{state.time:.4f}.png"
         canvas.convert("RGB").save(out, "PNG")
         return out
 
-    # ── Rigid chains ─────────────────────────────────────────────────
+    # ── geometry ─────────────────────────────────────────────────────
 
-    def _chain_leg(
-        self, canvas, limbs, bones, flip, s,
-        hip: tuple[float, float], side: str,
-    ) -> None:
-        """hip → knee → ankle. Knee is EXACTLY hip + offset(thigh)."""
-        thigh_img = self._img(limbs / "thigh.svg")
-        shin_img = self._img(limbs / "shin.svg")
-        if thigh_img is None:
-            return
-
-        th = _ang(bones.get(f"{side}_thigh") or bones.get(f"{side}_leg", Affine.identity()))
-        sh = _ang(bones.get(f"{side}_shin", Affine.identity()))
-        if flip:
-            th, sh = -th, -sh
-
-        hx, hy = hip
-        # 1) thigh from hip
-        self._blit_limb(canvas, thigh_img, th, hx, hy, s)
-
-        # 2) knee = hip + direction * THIGH  (rigid)
-        kx, ky = hx + _offset(th, self.THIGH * s)[0], hy + _offset(th, self.THIGH * s)[1]
-
-        # 3) shin from knee (same point the thigh ends at)
-        if shin_img is not None:
-            self._blit_limb(canvas, shin_img, sh, kx, ky, s)
-
-    def _chain_arm(
-        self, canvas, limbs, bones, flip, s,
-        shoulder: tuple[float, float], side: str,
-    ) -> None:
-        """shoulder → elbow → hand. Elbow = shoulder + offset(upper)."""
-        upper_img = self._img(limbs / "upper_arm.svg")
-        fore_img = self._img(limbs / "forearm.svg")
-        if upper_img is None:
-            return
-
-        ua = _ang(bones.get(f"{side}_upper_arm") or bones.get(f"{side}_arm", Affine.identity()))
-        fa = _ang(bones.get(f"{side}_forearm", Affine.identity()))
-        if flip:
-            ua, fa = -ua, -fa
-
-        sx, sy = shoulder
-        self._blit_limb(canvas, upper_img, ua, sx, sy, s)
-
-        ex, ey = sx + _offset(ua, self.UPPER * s)[0], sy + _offset(ua, self.UPPER * s)[1]
-
-        if fore_img is not None:
-            self._blit_limb(canvas, fore_img, fa, ex, ey, s)
-
-    # ── Blit helpers ─────────────────────────────────────────────────
-
-    def _blit_limb(
+    def _capsule(
         self,
-        canvas: Image.Image,
         img: Image.Image,
-        angle_deg: float,
-        joint_x: float,
-        joint_y: float,
-        scale: float,
+        p0: tuple[float, float],
+        p1: tuple[float, float],
+        radius: float,
+        fill: tuple[int, int, int, int],
+        outline: tuple[int, int, int, int] | None = None,
     ) -> None:
-        """
-        Paste limb so its TOP-CENTER pivot sits exactly on (joint_x, joint_y).
-        Rotation around that pivot; length along the sprite is visual only —
-        kinematic length is the constant used in _offset().
-        """
-        local = img
-        if scale != 1.0:
-            nw = max(1, int(local.width * scale))
-            nh = max(1, int(local.height * scale))
-            local = local.resize((nw, nh), Image.Resampling.LANCZOS)
+        """Filled capsule (stadium) from p0 to p1 — joints share endpoints."""
+        draw = ImageDraw.Draw(img)
+        x0, y0 = p0
+        x1, y1 = p1
+        r = max(1.0, radius)
 
-        pw, ph = local.size
-        # pivot = top center of sprite
-        piv_x, piv_y = pw / 2.0, 1.0
+        # Thick line as the shaft
+        draw.line([(x0, y0), (x1, y1)], fill=fill, width=int(r * 2))
+        # Round caps at both joints (identical points for connected segments)
+        for cx_, cy_ in (p0, p1):
+            draw.ellipse(
+                [cx_ - r, cy_ - r, cx_ + r, cy_ + r],
+                fill=fill,
+                outline=outline,
+            )
+        if outline is not None:
+            # outline along edges approx via slightly wider stroke underneath already filled
+            pass
 
-        diag = int(math.ceil(math.hypot(pw, ph))) + 4
-        side = diag * 2
-        pad = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-        pad.paste(local, (int(diag - piv_x), int(diag - piv_y)), local)
+    def _foot(
+        self,
+        img: Image.Image,
+        ankle: tuple[float, float],
+        shin_ang: float,
+        size: float,
+        fill: tuple[int, int, int, int],
+    ) -> None:
+        """Small foot ellipse oriented perpendicular-ish to shin."""
+        draw = ImageDraw.Draw(img)
+        ax, ay = ankle
+        # foot extends forward (positive angle direction)
+        fx = ax + math.sin(math.radians(shin_ang + 90)) * size * 0.3
+        # simpler: just a blob slightly forward of ankle
+        forward = math.sin(math.radians(shin_ang))
+        # foot along +x when shin is vertical
+        ox = size * 0.55
+        draw.ellipse(
+            [ax - size * 0.3 + ox, ay - size * 0.25,
+             ax + size * 0.9, ay + size * 0.35],
+            fill=fill,
+        )
 
-        # PIL rotate is counter-clockwise for positive degrees;
-        # our angle is clockwise-from-down in screen y-down space → negate
-        rot = pad.rotate(-angle_deg, resample=Image.Resampling.BICUBIC)
-        canvas.paste(rot, (int(joint_x - diag), int(joint_y - diag)), rot)
+    def _disk(
+        self,
+        img: Image.Image,
+        center: tuple[float, float],
+        radius: float,
+        fill: tuple[int, int, int, int],
+    ) -> None:
+        draw = ImageDraw.Draw(img)
+        cx, cy = center
+        r = max(1.0, radius)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
 
     def _blit_centered(
         self, canvas: Image.Image, img: Image.Image,
@@ -243,23 +226,21 @@ class PillowCutoutRenderer(FrameRenderer):
             nw = max(1, int(local.width * scale))
             nh = max(1, int(local.height * scale))
             local = local.resize((nw, nh), Image.Resampling.LANCZOS)
-        canvas.paste(
-            local,
-            (int(cx - local.width / 2), int(cy - local.height / 2)),
-            local if local.mode == "RGBA" else None,
-        )
-
-    def _img(self, path: Path) -> Image.Image | None:
-        if not path.is_file():
-            return None
-        return self._svg_to_pil(path)
+        x = int(cx - local.width / 2)
+        y = int(cy - local.height / 2)
+        # paste onto RGBA canvas
+        if local.mode != "RGBA":
+            local = local.convert("RGBA")
+        canvas.alpha_composite(local, (x, y))
 
     def _paste_tile(
         self, canvas: Image.Image, img: Image.Image,
         ox: int, oy: int, tile_x: bool,
     ) -> None:
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
         if not tile_x:
-            canvas.paste(img, (ox, oy), img if img.mode == "RGBA" else None)
+            canvas.alpha_composite(img, (ox, oy))
             return
         iw = img.size[0]
         if iw <= 0:
@@ -267,7 +248,7 @@ class PillowCutoutRenderer(FrameRenderer):
         cw = canvas.size[0]
         x = (ox % iw) - iw
         while x < cw + iw:
-            canvas.paste(img, (x, oy), img if img.mode == "RGBA" else None)
+            canvas.alpha_composite(img, (x, oy))
             x += iw
 
     def _svg_to_pil(self, svg_path: Path | None) -> Image.Image:

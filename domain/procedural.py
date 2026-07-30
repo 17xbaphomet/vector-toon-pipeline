@@ -8,7 +8,7 @@ from typing import Sequence
 from .entities import VisemeCue
 from .value_objects import Affine, CameraState, Viseme
 
-# Segment lengths — MUST match PillowCutoutRenderer constants
+# Shared skeleton constants (renderer imports these)
 THIGH_LEN = 50.0
 SHIN_LEN = 48.0
 UPPER_ARM_LEN = 40.0
@@ -35,11 +35,7 @@ def _two_bone_ik(
     thigh_len: float = THIGH_LEN,
     shin_len: float = SHIN_LEN,
 ) -> tuple[float, float, tuple[float, float]]:
-    """
-    Returns (thigh_world_deg, shin_world_deg, knee_pos).
-    Both angles absolute: 0 = down, + toward +x.
-    Knee is rigidly at hip + dir(thigh)*thigh_len.
-    """
+    """Absolute thigh/shin angles (0=down, + toward +x) + knee pos."""
     dx = foot[0] - hip[0]
     dy = foot[1] - hip[1]
     dist = math.hypot(dx, dy)
@@ -49,16 +45,12 @@ def _two_bone_ik(
     cos_a = (thigh_len**2 + dist**2 - shin_len**2) / (2 * thigh_len * dist)
     a = math.degrees(math.acos(_clamp(cos_a, -1.0, 1.0)))
 
-    # Knee behind (posterior) relative to hip→foot
-    thigh_ang = target - a
+    thigh_ang = target - a  # knee posterior
 
     rad = math.radians(thigh_ang)
     knee = (hip[0] + math.sin(rad) * thigh_len, hip[1] + math.cos(rad) * thigh_len)
 
-    sdx = foot[0] - knee[0]
-    sdy = foot[1] - knee[1]
-    shin_ang = math.degrees(math.atan2(sdx, sdy))
-
+    shin_ang = math.degrees(math.atan2(foot[0] - knee[0], foot[1] - knee[1]))
     return thigh_ang, shin_ang, knee
 
 
@@ -84,7 +76,7 @@ def grounded_walk(
     stance_plant = step_i * step_length
     swing_from = (step_i - 1) * step_length
     swing_to = (step_i + 1) * step_length
-    stance_is_left = step_i % 2 == 0
+    stance_is_left = (step_i % 2 == 0)
 
     su = _ease_smooth(u)
     swing_wx = swing_from + (swing_to - swing_from) * su
@@ -104,6 +96,7 @@ def grounded_walk(
 
     left_foot = to_local(left_wx, left_wy)
     right_foot = to_local(right_wx, right_wy)
+    # y+ down: hip above ground
     hip = (0.0, -(hip_height - bob))
 
     l_th, l_sh, _ = _two_bone_ik(hip, left_foot, thigh_len, shin_len)
