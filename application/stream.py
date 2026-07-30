@@ -1,21 +1,19 @@
-"""Continuous real-time stream: compute frames on the fly and serve/pipe them."""
+"""Continuous real-time stream with German landscape zones."""
 
 from __future__ import annotations
 
 import io
-import socketserver
-import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-from typing import Callable, Iterator, Sequence
+from typing import Iterator, Sequence
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.procedural import grounded_walk, head_bob
-from domain.value_objects import Affine, BackgroundLayer, CameraState, Viseme
+from domain.value_objects import Affine, CameraState, Viseme
+from domain.zones import ZoneSequence, default_german_tour
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
 
 
@@ -29,19 +27,12 @@ class StreamConfig:
     facing: float = 1.0
     scale: float = 1.15
     character_id: str = "bob"
-    # Infinite if None
     duration: float | None = None
+    fade_s: float = 1.2
 
 
 class ContinuousWalkStream:
-    """
-    Continuously computes walk + parallax frames in real time.
-
-    Usage:
-        stream = ContinuousWalkStream(scene, renderer, rig)
-        for jpeg_bytes in stream.frames_jpeg():
-            ...  # push to network / ffmpeg
-    """
+    """Live walk + zone landscapes + Ortsschild transitions."""
 
     def __init__(
         self,
@@ -49,6 +40,7 @@ class ContinuousWalkStream:
         renderer: PillowCutoutRenderer,
         rig: CharacterRig,
         config: StreamConfig | None = None,
+        zones: ZoneSequence | None = None,
     ) -> None:
         self.scene = scene
         self.renderer = renderer
@@ -57,31 +49,16 @@ class ContinuousWalkStream:
             fps=float(scene.fps),
             width=scene.width,
             height=scene.height,
-            scale=rig.default_scale if hasattr(rig, "default_scale") else 1.15,
+            scale=getattr(rig, "default_scale", 1.15),
             character_id=rig.id,
         )
+        self.zones = zones or default_german_tour()
         self._t0 = time.perf_counter()
         self._running = False
-        self._latest_jpeg: bytes | None = None
-        self._lock = threading.Lock()
-
-        # Continuous backgrounds: scroll driven by live time
-        walk = grounded_walk(0.0, step_length=self.cfg.step_length, cycle=self.cfg.cycle)
-        self._scroll_speed = walk["scroll_speed"]
-        self._backgrounds = tuple(
-            BackgroundLayer(
-                path=layer.path,
-                z_index=layer.z_index,
-                parallax=layer.parallax,
-                scroll_x=-self.cfg.facing
-                * self._scroll_speed
-                * max(layer.parallax, 0.05),
-                scroll_y=layer.scroll_y,
-                repeat_x=True,
-                repeat_y=layer.repeat_y,
-            )
-            for layer in scene.backgrounds
+        sample = grounded_walk(
+            0.0, step_length=self.cfg.step_length, cycle=self.cfg.cycle
         )
+        self._scroll_speed = sample["scroll_speed"]
 
     def _compose_state(self, t: float) -> FrameState:
         gw = grounded_walk(
@@ -94,7 +71,6 @@ class ContinuousWalkStream:
         bob = head_bob(t, amplitude=2.0, freq=2.5)
         head = bones.get("head", Affine.identity())
         bones["head"] = head.compose(Affine.translate(0.0, bob))
-
         return FrameState(
             time=t,
             character_id=self.cfg.character_id,
@@ -107,12 +83,58 @@ class ContinuousWalkStream:
             camera=CameraState(),
         )
 
+    def _blend_images(self, a: Image.Image, b: Image.Image, t: float) -> Image.Image:
+        t = max(0.0, min(1.0, t))
+        return Image.blend(a.convert("RGB"), b.convert("RGB"), t)
+
+    def _draw_ortsschild(
+        self, img: Image.Image, text: str, alpha: float = 1.0
+    ) -> Image.Image:
+        if alpha <= 0.01:
+            return img
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        cx, cy = int(img.width * 0.72), int(img.height * 0.55)
+        w, h = 160, 56
+        x0, y0 = cx - w // 2, cy - h // 2
+        draw.rectangle(
+            [cx - 4, cy + h // 2 - 4, cx + 4, cy + h // 2 + 40],
+            fill=(90, 90, 90, 230),
+        )
+        draw.rounded_rectangle(
+            [x0, y0, x0 + w, y0 + h],
+            radius=4,
+            fill=(245, 245, 245, 240),
+            outline=(30, 30, 30, 255),
+            width=3,
+        )
+        draw.rounded_rectangle(
+            [x0 + 5, y0 + 5, x0 + w - 5, y0 + h - 5],
+            radius=2,
+            outline=(30, 30, 30, 200),
+            width=1,
+        )
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
+        except Exception:
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(
+            (cx - tw // 2, cy - th // 2 - 2), text, fill=(20, 20, 20, 255), font=font
+        )
+        if alpha < 1.0:
+            r, g, b, a = overlay.split()
+            a = a.point(lambda p: int(p * alpha))
+            overlay = Image.merge("RGBA", (r, g, b, a))
+        return Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
     def frames(self) -> Iterator[Image.Image]:
-        """Yield RGB frames paced to real-time fps. Runs until duration or stop()."""
         self._running = True
         self._t0 = time.perf_counter()
         dt = 1.0 / max(self.cfg.fps, 1.0)
         frame_i = 0
+        facing = self.cfg.facing
 
         while self._running:
             t = frame_i * dt
@@ -126,12 +148,37 @@ class ContinuousWalkStream:
                 time.sleep(sleep)
 
             state = self._compose_state(t)
+            distance = self._scroll_speed * t
+
+            cur, nxt, blend = self.zones.active_blend(
+                distance, self._scroll_speed, self.cfg.fade_s
+            )
+            layers_a = self.zones.layers_for(cur.zone, self._scroll_speed, facing)
             img = self.renderer.render_image(
                 state,
                 self.rig,
                 (self.cfg.width, self.cfg.height),
-                backgrounds=self._backgrounds,
+                backgrounds=layers_a,
             )
+
+            if nxt is not None and blend > 0.0:
+                layers_b = self.zones.layers_for(nxt.zone, self._scroll_speed, facing)
+                img_b = self.renderer.render_image(
+                    state,
+                    self.rig,
+                    (self.cfg.width, self.cfg.height),
+                    backgrounds=layers_b,
+                )
+                img = self._blend_images(img, img_b, blend)
+
+            for ev in self.zones.transitions():
+                window = self._scroll_speed * 2.5
+                d = abs(distance - ev.at_distance)
+                if d < window and ev.show_sign:
+                    alpha = max(0.0, 1.0 - d / window)
+                    img = self._draw_ortsschild(img, ev.sign_text, alpha=alpha)
+                    break
+
             yield img
             frame_i += 1
 
@@ -139,18 +186,10 @@ class ContinuousWalkStream:
         for img in self.frames():
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=quality)
-            data = buf.getvalue()
-            with self._lock:
-                self._latest_jpeg = data
-            yield data
+            yield buf.getvalue()
 
     def stop(self) -> None:
         self._running = False
-
-    @property
-    def latest_jpeg(self) -> bytes | None:
-        with self._lock:
-            return self._latest_jpeg
 
 
 def run_mjpeg_server(
@@ -158,15 +197,10 @@ def run_mjpeg_server(
     host: str = "0.0.0.0",
     port: int = 8765,
 ) -> HTTPServer:
-    """
-    Start a multipart MJPEG HTTP server.
-    Open http://localhost:8765/ in a browser to watch the live stream.
-    """
-
     boundary = b"frame"
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):  # quieter
+        def log_message(self, fmt, *args):
             pass
 
         def do_GET(self):
@@ -184,24 +218,23 @@ def run_mjpeg_server(
                 self.end_headers()
                 self.wfile.write(html)
                 return
-
             if self.path != "/stream.mjpg":
                 self.send_error(404)
                 return
-
             self.send_response(200)
             self.send_header(
-                "Content-Type", f"multipart/x-mixed-replace; boundary={boundary.decode()}"
+                "Content-Type",
+                f"multipart/x-mixed-replace; boundary={boundary.decode()}",
             )
             self.send_header("Cache-Control", "no-cache, no-store")
-            self.send_header("Connection", "close")
             self.end_headers()
-
             try:
                 for jpeg in stream.frames_jpeg():
                     self.wfile.write(b"--" + boundary + b"\r\n")
                     self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                    self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode())
+                    self.wfile.write(
+                        f"Content-Length: {len(jpeg)}\r\n\r\n".encode()
+                    )
                     self.wfile.write(jpeg)
                     self.wfile.write(b"\r\n")
                     self.wfile.flush()
@@ -210,6 +243,7 @@ def run_mjpeg_server(
 
     server = HTTPServer((host, port), Handler)
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
+    print("Zones: Felder → Landstraße → Musterdorf → Stadtwald → Neustadt → Felder…")
     return server
 
 
@@ -218,31 +252,17 @@ def pipe_to_ffmpeg(
     output: str = "pipe:1",
     extra_args: Sequence[str] | None = None,
 ) -> int:
-    """
-    Encode live frames via ffmpeg stdin (raw JPEG sequence or image2pipe).
-
-    Example:
-        python cli.py scene.json --stream --pipe out_live.mp4
-    """
     import subprocess
 
     fps = stream.cfg.fps
-    w, h = stream.cfg.width, stream.cfg.height
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-f", "image2pipe",
-        "-framerate", str(fps),
-        "-i", "-",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", "ultrafast",
-        "-tune", "zerolatency",
+        "ffmpeg", "-y", "-f", "image2pipe", "-framerate", str(fps),
+        "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast", "-tune", "zerolatency",
     ]
     if extra_args:
         cmd.extend(extra_args)
     cmd.append(output)
-
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     assert proc.stdin is not None
     try:
