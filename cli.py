@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-# Ensure project root is importable
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -20,19 +19,20 @@ def build_pipeline(args):
     from infrastructure.assets.file_repo import FileCharacterAssetRepository
     from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
     from infrastructure.encoders.ffmpeg_encoder import FFmpegEncoder
+    from infrastructure.tts.piper import PiperTTSProvider
     from application.pipeline import VideoGenerationPipeline, PipelineState
 
-    # Prefer Rhubarb; fall back to energy-based if binary missing
     try:
-        extractor = RhubarbVisemeExtractor(args.rhubarb)
-        # quick check
         import shutil
+
+        extractor = RhubarbVisemeExtractor(args.rhubarb)
         if not shutil.which(args.rhubarb):
             raise FileNotFoundError
     except Exception:
         print("[warn] Rhubarb not found – using energy fallback visemes")
         extractor = EnergyVisemeExtractor()
 
+    tts = PiperTTSProvider()
     repo = FileCharacterAssetRepository(ROOT / "assets" / "characters")
     renderer = PillowCutoutRenderer(cache_dir=args.work_dir / "svg_cache")
     encoder = FFmpegEncoder()
@@ -45,21 +45,20 @@ def build_pipeline(args):
         asset_repo=repo,
         frame_renderer=renderer,
         video_encoder=encoder,
+        tts=tts,
         work_dir=args.work_dir,
         on_progress=on_progress,
     )
 
 
-def load_scene(path: Path):
-    """Minimal JSON → SceneSpec loader (no pydantic required for MVP)."""
+def load_scene(path: Path, text_override: str | None = None, voice: str | None = None):
     from domain.entities import CharacterRig, SceneAction, SceneSpec
-    from domain.value_objects import Timing, Viseme
+    from domain.value_objects import BackgroundLayer, Timing
 
     raw = json.loads(path.read_text(encoding="utf-8"))
 
     characters = []
     for c in raw.get("characters", []):
-        # For demo we load via asset repo later; here just stub the id
         characters.append(
             CharacterRig(
                 id=c["id"],
@@ -83,14 +82,37 @@ def load_scene(path: Path):
             )
         )
 
+    backgrounds = []
+    for b in raw.get("backgrounds", []):
+        backgrounds.append(
+            BackgroundLayer(
+                path=Path(b["path"]),
+                z_index=int(b.get("z_index", 0)),
+                parallax=float(b.get("parallax", 1.0)),
+                scroll_x=float(b.get("scroll_x", 0)),
+                scroll_y=float(b.get("scroll_y", 0)),
+                repeat_x=bool(b.get("repeat_x", False)),
+                repeat_y=bool(b.get("repeat_y", False)),
+            )
+        )
+
+    audio = raw.get("audio_path")
+    audio_path = Path(audio) if audio else None
+
+    dialogue = text_override or raw.get("dialogue")
+    voice_id = voice or raw.get("voice_id", "en_US-lessac-medium")
+
     return SceneSpec(
         width=int(raw["width"]),
         height=int(raw["height"]),
         fps=int(raw["fps"]),
         duration=float(raw["duration"]),
-        audio_path=Path(raw["audio_path"]),
+        audio_path=audio_path,
         characters=characters,
         actions=actions,
+        backgrounds=tuple(backgrounds),
+        dialogue=dialogue,
+        voice_id=voice_id,
         background=Path(raw["background"]) if raw.get("background") else None,
     )
 
@@ -101,13 +123,15 @@ def main() -> None:
     parser.add_argument("-o", "--output", type=Path, default=Path("output.mp4"))
     parser.add_argument("--work-dir", type=Path, default=Path("./work"))
     parser.add_argument("--rhubarb", default="rhubarb", help="Rhubarb binary path")
+    parser.add_argument("--text", default=None, help="Override dialogue (triggers TTS)")
+    parser.add_argument("--voice", default=None, help="Piper voice id")
     args = parser.parse_args()
 
     if not args.scene.is_file():
         print(f"Scene file not found: {args.scene}")
         sys.exit(1)
 
-    scene = load_scene(args.scene)
+    scene = load_scene(args.scene, text_override=args.text, voice=args.voice)
     pipeline = build_pipeline(args)
 
     print(f"Running pipeline → {args.output}")

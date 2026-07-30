@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .entities import CharacterRig, FrameState, VisemeCue
-from .value_objects import Viseme
+from .value_objects import BackgroundLayer, Viseme
 
 
 class VisemeExtractor(ABC):
@@ -42,7 +42,13 @@ class CharacterAssetRepository(ABC):
 
 class FrameRenderer(ABC):
     @abstractmethod
-    def render(self, state: FrameState, rig: CharacterRig, canvas_size: tuple[int, int]) -> Path:
+    def render(
+        self,
+        state: FrameState,
+        rig: CharacterRig,
+        canvas_size: tuple[int, int],
+        backgrounds: Sequence[BackgroundLayer] | None = None,
+    ) -> Path:
         """Render one frame to a PNG path and return it."""
 
 

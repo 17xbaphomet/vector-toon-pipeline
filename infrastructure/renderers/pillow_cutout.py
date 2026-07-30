@@ -1,25 +1,25 @@
-"""MVP renderer: composite SVG layers with Pillow + cairosvg, swap mouth by viseme."""
+"""Frame renderer: parallax backgrounds + SVG character + mouth swap."""
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
-from typing import Mapping
+from typing import Sequence
 
 import cairosvg
 from PIL import Image
 
 from domain.entities import CharacterRig, FrameState
 from domain.interfaces import FrameRenderer
-from domain.value_objects import Affine, Viseme
+from domain.procedural import parallax_offset
+from domain.value_objects import Affine, BackgroundLayer, Viseme
 
 
 class PillowCutoutRenderer(FrameRenderer):
     """
-    Renders a single frame by:
-    1. Loading base / layer SVGs → PNG via cairosvg
-    2. Selecting the correct mouth shape for the current viseme
-    3. Applying simple root + bone transforms (translate/scale for MVP)
-    4. Compositing onto a transparent or solid canvas
+    1. Draw background layers (sorted by z_index) with parallax
+    2. Composite character body + mouth for current viseme
+    3. Apply root position + simple bone offsets
     """
 
     def __init__(self, cache_dir: Path | None = None) -> None:
@@ -32,55 +32,83 @@ class PillowCutoutRenderer(FrameRenderer):
         state: FrameState,
         rig: CharacterRig,
         canvas_size: tuple[int, int],
+        backgrounds: Sequence[BackgroundLayer] | None = None,
     ) -> Path:
         w, h = canvas_size
-        canvas = Image.new("RGBA", (w, h), (255, 255, 255, 255))
+        canvas = Image.new("RGBA", (w, h), (135, 206, 235, 255))  # sky blue default
 
-        # 1. Body / base
+        # --- Backgrounds (back → front) ---
+        if backgrounds:
+            layers = sorted(backgrounds, key=lambda b: b.z_index)
+            for layer in layers:
+                img = self._svg_to_pil(Path(layer.path))
+                ox, oy = parallax_offset(
+                    state.camera,
+                    layer.parallax,
+                    state.time,
+                    layer.scroll_x,
+                    layer.scroll_y,
+                )
+                self._paste(canvas, img, int(ox), int(oy), tile_x=layer.repeat_x)
+
+        # --- Character ---
         body = self._svg_to_pil(rig.base_svg)
-        # 2. Mouth for current viseme
         mouth_path = rig.mouth_shapes.get(state.viseme) or rig.mouth_shapes.get(Viseme.X)
         mouth = self._svg_to_pil(mouth_path) if mouth_path else None
 
-        # Simple placement: root position is center of character
         cx, cy = state.root_position
         scale = state.scale
 
-        def paste_centered(img: Image.Image, ox: float = 0.0, oy: float = 0.0) -> None:
-            iw, ih = img.size
-            # scale
+        def paste_char(img: Image.Image, ox: float = 0.0, oy: float = 0.0) -> None:
+            local = img
             if scale != 1.0:
-                nw, nh = int(iw * scale), int(ih * scale)
-                img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-                iw, ih = nw, nh
-            x = int(cx + ox - iw / 2)
-            y = int(cy + oy - ih / 2)
-            canvas.paste(img, (x, y), img if img.mode == "RGBA" else None)
+                nw = max(1, int(local.width * scale))
+                nh = max(1, int(local.height * scale))
+                local = local.resize((nw, nh), Image.Resampling.LANCZOS)
+            x = int(cx + ox - local.width / 2)
+            y = int(cy + oy - local.height / 2)
+            canvas.paste(local, (x, y), local if local.mode == "RGBA" else None)
 
-        paste_centered(body)
+        paste_char(body)
 
-        # Head bob from bone_transforms
         head_tf = state.bone_transforms.get("head", Affine.identity())
-        head_oy = head_tf.f  # ty component
-
+        head_oy = head_tf.f
         if mouth is not None:
-            # Mouth is roughly at head height; offset a bit upward
-            paste_centered(mouth, oy=head_oy - 30 * scale)
+            paste_char(mouth, oy=head_oy - 30 * scale)
 
         out = self.cache_dir / f"frame_{state.time:.4f}.png"
         canvas.convert("RGB").save(out, "PNG")
         return out
 
+    def _paste(
+        self,
+        canvas: Image.Image,
+        img: Image.Image,
+        ox: int,
+        oy: int,
+        tile_x: bool = False,
+    ) -> None:
+        """Paste image; optionally tile horizontally to fill canvas."""
+        cw, ch = canvas.size
+        iw, ih = img.size
+        if not tile_x:
+            canvas.paste(img, (ox, oy), img if img.mode == "RGBA" else None)
+            return
+        # tile covering [-iw, cw+iw]
+        start = ox % iw - iw
+        x = start
+        while x < cw + iw:
+            canvas.paste(img, (x, oy), img if img.mode == "RGBA" else None)
+            x += iw
+
     def _svg_to_pil(self, svg_path: Path | None) -> Image.Image:
-        if svg_path is None:
+        if svg_path is None or not Path(svg_path).is_file():
             return Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        key = str(svg_path.resolve())
+        key = str(Path(svg_path).resolve())
         if key in self._png_cache:
             return self._png_cache[key].copy()
 
         png_bytes = cairosvg.svg2png(url=str(svg_path))
-        from io import BytesIO
-
         img = Image.open(BytesIO(png_bytes)).convert("RGBA")
         self._png_cache[key] = img
         return img.copy()
