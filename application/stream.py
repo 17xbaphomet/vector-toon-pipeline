@@ -1,4 +1,4 @@
-"""Stream: strict parallax painter order — far/slow behind near/fast."""
+"""Stream: organic tagged features + soft region probability climates."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.procedural import grounded_walk, head_bob, parallax_offset
 from domain.sky import celestial_at, scene_grade, sky_colors
 from domain.value_objects import Affine, BackgroundLayer, CameraState, Viseme
-from domain.zones import Feature, LandscapeRoute, Overlay, generate_route
+from domain.zones import LandscapeRoute, generate_route
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
 
 
@@ -42,15 +42,12 @@ class StreamConfig:
 
 @dataclass(frozen=True, slots=True)
 class _DrawItem:
-    """Anything drawn in world space, ordered by parallax ascending."""
-
     parallax: float
     path: Path
     start: float
     end: float
     scale: float = 1.0
     y_offset: float = 0.0
-    # tie-breaker: lower draws first when parallax equal
     order: int = 0
 
 
@@ -111,14 +108,7 @@ class ContinuousWalkStream:
     def _world_to_screen_x(
         self, world_x: float, body_x: float, parallax: float = 1.0
     ) -> float:
-        """
-        Consistent scroll: as body moves forward (body_x↑ with facing=+1),
-        world points move left on screen. Same sign for all parallax values;
-        only the magnitude changes (far = smaller delta).
-        """
         return self._char_sx + (world_x - body_x) * self.cfg.facing * parallax
-
-    # ── sky ──────────────────────────────────────────────────────────
 
     def _make_sky_canvas(self, cel) -> Image.Image:
         w, h = self.cfg.width, self.cfg.height
@@ -212,27 +202,22 @@ class ContinuousWalkStream:
             rgb = Image.fromarray(arr.astype(np.uint8), "RGB")
         return rgb
 
-    # ── parallax-ordered world drawing ───────────────────────────────
-
     def _blit_item(self, canvas: Image.Image, item: _DrawItem, body_x: float) -> Image.Image:
         path = item.path
         if not path.is_file():
             return canvas
-
         left = self._world_to_screen_x(item.start, body_x, item.parallax)
         right = self._world_to_screen_x(item.end, body_x, item.parallax)
         if self.cfg.facing < 0:
             left, right = right, left
         if right < -60 or left > self.cfg.width + 60:
             return canvas
-
         art = self.renderer._svg_to_pil(path)
         panel_w = max(1, int(abs(right - left)))
         panel_h = max(1, int(self.cfg.height * item.scale))
         scaled = art.resize((panel_w, panel_h), Image.Resampling.LANCZOS)
         if scaled.mode != "RGBA":
             scaled = scaled.convert("RGBA")
-
         y = int(self.cfg.height - panel_h + item.y_offset)
         result = canvas.convert("RGBA")
         tmp = Image.new("RGBA", result.size, (0, 0, 0, 0))
@@ -242,7 +227,6 @@ class ContinuousWalkStream:
     def _blit_tiled_layer(
         self, canvas: Image.Image, layer: BackgroundLayer, state: FrameState
     ) -> Image.Image:
-        """Tiling background strip (mid hills / ground road)."""
         path = Path(layer.path)
         if not path.is_file():
             return canvas
@@ -267,12 +251,7 @@ class ContinuousWalkStream:
         return result
 
     def _collect_draw_items(self, body_x: float) -> list[_DrawItem]:
-        """
-        All discrete world props as DrawItems.
-        Sorted later by (parallax, order) so slower/far always under faster/near.
-        """
         items: list[_DrawItem] = []
-
         for feat in self.route.active_features(body_x):
             items.append(
                 _DrawItem(
@@ -285,26 +264,12 @@ class ContinuousWalkStream:
                     order=0,
                 )
             )
-
-        for ov in self.route.active_overlays(body_x):
-            items.append(
-                _DrawItem(
-                    parallax=1.0,  # places sit on the near plane
-                    path=self.route.overlay_object_path(ov.kind),
-                    start=ov.start,
-                    end=ov.end,
-                    scale=1.0,
-                    y_offset=0.0,
-                    order=1,  # after near features at same parallax
-                )
-            )
-
         return items
 
     def _draw_ortsschild(
         self, img: Image.Image, text: str, screen_x: float, ground_y: float
     ) -> Image.Image:
-        if screen_x < -100 or screen_x > img.width + 100:
+        if not text or screen_x < -100 or screen_x > img.width + 100:
             return img
         layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer)
@@ -336,7 +301,6 @@ class ContinuousWalkStream:
         dt = 1.0 / max(self.cfg.fps, 1.0)
         frame_i = 0
         facing = self.cfg.facing
-        # Base tiling layers sorted by parallax ascending
         base_layers = sorted(
             self.route.base_layers(self._scroll_speed, facing),
             key=lambda L: L.parallax,
@@ -355,36 +319,29 @@ class ContinuousWalkStream:
             body_x = self._scroll_speed * t
             cel = celestial_at(self._scene_datetime(t), tz=self.cfg.tz)
 
-            # 1) Sky (parallax ~0)
             canvas = self._make_sky_canvas(cel)
             canvas = self._draw_projected_stars(canvas, cel)
             canvas = self._draw_moon(canvas, cel)
             canvas = self._draw_sun(canvas, cel)
 
-            # 2) Merge tiling base layers + discrete features/overlays,
-            #    paint strictly by ascending parallax (slow behind fast).
             items = self._collect_draw_items(body_x)
             items.sort(key=lambda it: (it.parallax, it.order))
 
-            # Interleave: for each parallax band, draw base tiles first then props
             bi = 0
             for item in items:
                 while bi < len(base_layers) and base_layers[bi].parallax <= item.parallax:
                     canvas = self._blit_tiled_layer(canvas, base_layers[bi], state)
                     bi += 1
                 canvas = self._blit_item(canvas, item, body_x)
-
-            # Remaining base layers (e.g. ground if no near props yet)
             while bi < len(base_layers):
                 canvas = self._blit_tiled_layer(canvas, base_layers[bi], state)
                 bi += 1
 
-            # 3) Ortsschild on near plane (after everything slow)
-            for ov in self.route.active_overlays(body_x, margin=600):
-                sx = self._world_to_screen_x(ov.sign_world_x, body_x, parallax=1.0)
-                canvas = self._draw_ortsschild(canvas, ov.sign_text, sx, self._char_sy)
+            for reg in self.route.active_regions(body_x, margin=600):
+                if reg.sign_text:
+                    sx = self._world_to_screen_x(reg.sign_world_x, body_x, parallax=1.0)
+                    canvas = self._draw_ortsschild(canvas, reg.sign_text, sx, self._char_sy)
 
-            # 4) Character on top of all world layers
             char = self.renderer.render_character(
                 state, self.rig, (self.cfg.width, self.cfg.height)
             )
@@ -449,14 +406,13 @@ def run_mjpeg_server(
                 pass
 
     server = HTTPServer((host, port), Handler)
-    cel = celestial_at(tz=stream.cfg.tz)
-    depths = {}
-    for f in stream.route.features:
-        depths[f.depth.name] = depths.get(f.depth.name, 0) + 1
+    moods: dict[str, int] = {}
+    for r in stream.route.regions:
+        moods[r.mood.value] = moods.get(r.mood.value, 0) + 1
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
     print(
-        f"Parallax-Regel: weit hinten = langsam + unten im Z-Stack · "
-        f"near={depths.get('NEAR',0)} mid={depths.get('MID',0)} far={depths.get('FAR',0)}"
+        f"Organisch: {len(stream.route.features)} Features · "
+        f"Regionen {', '.join(f'{k}×{v}' for k, v in moods.items())}"
     )
     return server
 
