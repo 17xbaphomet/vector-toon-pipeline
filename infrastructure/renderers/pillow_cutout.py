@@ -29,8 +29,6 @@ def _dir(angle_deg: float, length: float) -> tuple[float, float]:
 
 
 class PillowCutoutRenderer(FrameRenderer):
-    """Torso SVG + capsule limbs; supports disk PNG and in-memory Image."""
-
     def __init__(self, cache_dir: Path | None = None) -> None:
         self.cache_dir = Path(cache_dir or "./work/svg_cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -48,25 +46,37 @@ class PillowCutoutRenderer(FrameRenderer):
         img.convert("RGB").save(out, "PNG")
         return out
 
-    def render_image(
+    def render_backgrounds(
         self,
         state: FrameState,
-        rig: CharacterRig,
         canvas_size: tuple[int, int],
         backgrounds: Sequence[BackgroundLayer] | None = None,
     ) -> Image.Image:
-        """Render one frame to an in-memory RGB PIL Image (for streaming)."""
+        """Background layers only (no character) — for overlay compositing."""
         w, h = canvas_size
         canvas = Image.new("RGBA", (w, h), (135, 206, 235, 255))
-
         if backgrounds:
             for layer in sorted(backgrounds, key=lambda b: b.z_index):
                 img = self._svg_to_pil(Path(layer.path))
                 ox, oy = parallax_offset(
-                    state.camera, layer.parallax, state.time,
-                    layer.scroll_x, layer.scroll_y,
+                    state.camera,
+                    layer.parallax,
+                    state.time,
+                    layer.scroll_x,
+                    layer.scroll_y,
                 )
                 self._paste_tile(canvas, img, int(ox), int(oy), layer.repeat_x)
+        return canvas
+
+    def render_character(
+        self,
+        state: FrameState,
+        rig: CharacterRig,
+        canvas_size: tuple[int, int],
+    ) -> Image.Image:
+        """Character only on transparent canvas (to composite above overlays)."""
+        w, h = canvas_size
+        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
         cx, cy = state.root_position
         flip = state.scale < 0
@@ -105,25 +115,42 @@ class PillowCutoutRenderer(FrameRenderer):
             hx = hip_x + dx[side] * s
             sx = sh_x + dx[side] * s
 
-            th = _ang(bones.get(f"{side}_thigh") or bones.get(f"{side}_leg", Affine.identity()))
+            th = _ang(
+                bones.get(f"{side}_thigh") or bones.get(f"{side}_leg", Affine.identity())
+            )
             shn = _ang(bones.get(f"{side}_shin", Affine.identity()))
             if flip:
                 th, shn = -th, -shn
 
-            knee = (hx + _dir(th, THIGH_LEN * s)[0], hip_y + _dir(th, THIGH_LEN * s)[1])
-            ankle = (knee[0] + _dir(shn, SHIN_LEN * s)[0], knee[1] + _dir(shn, SHIN_LEN * s)[1])
+            knee = (
+                hx + _dir(th, THIGH_LEN * s)[0],
+                hip_y + _dir(th, THIGH_LEN * s)[1],
+            )
+            ankle = (
+                knee[0] + _dir(shn, SHIN_LEN * s)[0],
+                knee[1] + _dir(shn, SHIN_LEN * s)[1],
+            )
 
             self._capsule(layer, (hx, hip_y), knee, 9 * s, leg_col, leg_outline)
             self._capsule(layer, knee, ankle, 7 * s, leg_col, leg_outline)
             self._foot(layer, ankle, shn, 12 * s, foot_col)
 
-            ua = _ang(bones.get(f"{side}_upper_arm") or bones.get(f"{side}_arm", Affine.identity()))
+            ua = _ang(
+                bones.get(f"{side}_upper_arm")
+                or bones.get(f"{side}_arm", Affine.identity())
+            )
             fa = _ang(bones.get(f"{side}_forearm", Affine.identity()))
             if flip:
                 ua, fa = -ua, -fa
 
-            elbow = (sx + _dir(ua, UPPER_ARM_LEN * s)[0], sh_y + _dir(ua, UPPER_ARM_LEN * s)[1])
-            hand = (elbow[0] + _dir(fa, FOREARM_LEN * s)[0], elbow[1] + _dir(fa, FOREARM_LEN * s)[1])
+            elbow = (
+                sx + _dir(ua, UPPER_ARM_LEN * s)[0],
+                sh_y + _dir(ua, UPPER_ARM_LEN * s)[1],
+            )
+            hand = (
+                elbow[0] + _dir(fa, FOREARM_LEN * s)[0],
+                elbow[1] + _dir(fa, FOREARM_LEN * s)[1],
+            )
 
             self._capsule(layer, (sx, sh_y), elbow, 6 * s, arm_col, arm_outline)
             self._capsule(layer, elbow, hand, 5 * s, arm_col, arm_outline)
@@ -143,21 +170,39 @@ class PillowCutoutRenderer(FrameRenderer):
             my = sh_y - 28 * s + head_bob
             self._blit_centered(canvas, mouth, mx, my, s * 0.65)
 
-        return canvas.convert("RGB")
+        return canvas
+
+    def render_image(
+        self,
+        state: FrameState,
+        rig: CharacterRig,
+        canvas_size: tuple[int, int],
+        backgrounds: Sequence[BackgroundLayer] | None = None,
+    ) -> Image.Image:
+        bg = self.render_backgrounds(state, canvas_size, backgrounds)
+        char = self.render_character(state, rig, canvas_size)
+        return Image.alpha_composite(bg, char).convert("RGB")
 
     def _capsule(self, img, p0, p1, radius, fill, outline=None) -> None:
         draw = ImageDraw.Draw(img)
         r = max(1.0, radius)
         draw.line([p0, p1], fill=fill, width=int(r * 2))
         for cx_, cy_ in (p0, p1):
-            draw.ellipse([cx_ - r, cy_ - r, cx_ + r, cy_ + r], fill=fill, outline=outline)
+            draw.ellipse(
+                [cx_ - r, cy_ - r, cx_ + r, cy_ + r], fill=fill, outline=outline
+            )
 
     def _foot(self, img, ankle, shin_ang, size, fill) -> None:
         draw = ImageDraw.Draw(img)
         ax, ay = ankle
         ox = size * 0.55
         draw.ellipse(
-            [ax - size * 0.3 + ox, ay - size * 0.25, ax + size * 0.9, ay + size * 0.35],
+            [
+                ax - size * 0.3 + ox,
+                ay - size * 0.25,
+                ax + size * 0.9,
+                ay + size * 0.35,
+            ],
             fill=fill,
         )
 
@@ -175,7 +220,9 @@ class PillowCutoutRenderer(FrameRenderer):
             local = local.resize((nw, nh), Image.Resampling.LANCZOS)
         if local.mode != "RGBA":
             local = local.convert("RGBA")
-        canvas.alpha_composite(local, (int(cx - local.width / 2), int(cy - local.height / 2)))
+        canvas.alpha_composite(
+            local, (int(cx - local.width / 2), int(cy - local.height / 2))
+        )
 
     def _paste_tile(self, canvas, img, ox, oy, tile_x) -> None:
         if img.mode != "RGBA":
