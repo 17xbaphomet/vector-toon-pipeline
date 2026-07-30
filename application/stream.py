@@ -1,4 +1,4 @@
-"""Stream: sky behind all → landscape → objects → character → day/night grade."""
+"""Stream: real south-facing celestial sky + landscape walk."""
 
 from __future__ import annotations
 
@@ -13,14 +13,10 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
+from domain.celestial import project_body, project_stars, south_facing_project
 from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.procedural import grounded_walk, head_bob
-from domain.sky import (
-    alt_az_to_screen,
-    celestial_at,
-    scene_grade,
-    sky_colors,
-)
+from domain.sky import celestial_at, scene_grade, sky_colors
 from domain.value_objects import Affine, CameraState, Viseme
 from domain.zones import LandscapeRoute, Overlay, generate_route
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
@@ -120,8 +116,36 @@ class ContinuousWalkStream:
             draw.line([(0, y), (w, y)], fill=(r, g, b))
         return sky.convert("RGBA")
 
+    def _draw_projected_stars(self, canvas: Image.Image, cel) -> Image.Image:
+        """Real star field projected looking south from Germany."""
+        # Fade in as it gets dark
+        if cel.sun_alt_deg > 0:
+            return canvas
+        strength = min(1.0, max(0.0, (-cel.sun_alt_deg) / 10.0))
+        if strength < 0.05:
+            return canvas
+
+        stars = project_stars(
+            cel.local_time,
+            canvas.width,
+            canvas.height,
+            max_mag=2.5,
+        )
+        layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+        for s in stars:
+            # Size/brightness from magnitude
+            bright = max(0.15, min(1.0, (2.5 - s.mag) / 3.5))
+            r = max(1, int(1 + bright * 2.5))
+            alpha = int(255 * strength * bright)
+            draw.ellipse(
+                [s.x - r, s.y - r, s.x + r, s.y + r],
+                fill=(255, 250, 240, alpha),
+            )
+        return Image.alpha_composite(canvas, layer)
+
     def _draw_sun(self, canvas: Image.Image, cel) -> Image.Image:
-        pos = alt_az_to_screen(cel.sun_alt_deg, cel.sun_az_deg, canvas.width, canvas.height)
+        pos = south_facing_project(cel.sun_alt_deg, cel.sun_az_deg, canvas.width, canvas.height)
         if pos is None:
             return canvas
         x, y = pos
@@ -135,13 +159,10 @@ class ContinuousWalkStream:
         return Image.alpha_composite(canvas, layer)
 
     def _draw_moon(self, canvas: Image.Image, cel) -> Image.Image:
-        """
-        N-hemisphere convention (DOC):
-          waxing → lit on the RIGHT
-          waning → lit on the LEFT
-        Dark side: high transparency so daytime sky shows through.
-        """
-        pos = alt_az_to_screen(cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height)
+        """N-hemisphere: waxing lit on the right; dark side transparent."""
+        pos = south_facing_project(
+            cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height
+        )
         if pos is None:
             return canvas
         x, y = pos
@@ -149,9 +170,6 @@ class ContinuousWalkStream:
         moon_lit = (230, 230, 210, 240)
         moon_dark = (230, 230, 210, 18)
         phase = cel.moon_phase
-        # Elongation angle: 0=new, π=full, 2π=new
-        # Orthographic terminator: x = -cos(phase·2π)·half
-        # (sign flipped so waxing lights the right side)
         pa = phase * 2.0 * math.pi
         moon_img = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
         cx, cy = r + 1, r + 1
@@ -162,28 +180,10 @@ class ContinuousWalkStream:
                     continue
                 half = math.sqrt(max(0.0, r * r - dy * dy))
                 term = -math.cos(pa) * half
-                # Right of terminator is always the sunlit side for this projection
                 lit = dx >= term
                 moon_img.putpixel((px, py), moon_lit if lit else moon_dark)
         layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         layer.paste(moon_img, (int(x - r - 1), int(y - r - 1)), moon_img)
-        return Image.alpha_composite(canvas, layer)
-
-    def _draw_stars(self, canvas: Image.Image, cel) -> Image.Image:
-        if cel.sun_alt_deg > -4:
-            return canvas
-        strength = min(1.0, (-cel.sun_alt_deg - 4) / 10.0)
-        layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(layer)
-        w, h = canvas.size
-        horizon = int(h * 0.55)
-        state = 42
-        for _ in range(60):
-            state = (state * 1103515245 + 12345) & 0x7FFFFFFF
-            sx = state % w
-            state = (state * 1103515245 + 12345) & 0x7FFFFFFF
-            sy = state % horizon
-            draw.ellipse([sx, sy, sx + 1, sy + 1], fill=(255, 255, 240, int(180 * strength)))
         return Image.alpha_composite(canvas, layer)
 
     def _apply_grade(self, img: Image.Image, cel) -> Image.Image:
@@ -272,8 +272,9 @@ class ContinuousWalkStream:
             body_x = self._scroll_speed * t
             cel = celestial_at(self._scene_datetime(t), tz=self.cfg.tz)
 
+            # 1) Sky from real south-facing projection
             canvas = self._make_sky_canvas(cel)
-            canvas = self._draw_stars(canvas, cel)
+            canvas = self._draw_projected_stars(canvas, cel)
             canvas = self._draw_moon(canvas, cel)
             canvas = self._draw_sun(canvas, cel)
             canvas = self._composite_landscape(canvas, state, base)
@@ -374,21 +375,19 @@ def run_mjpeg_server(
 
     server = HTTPServer((host, port), Handler)
     cel = celestial_at(tz=stream.cfg.tz)
+    stars = project_stars(cel.local_time, stream.cfg.width, stream.cfg.height)
     g = scene_grade(cel)
-    phases = [
-        (0.03, "Neumond"), (0.22, "zunehmende Sichel"), (0.28, "erstes Viertel"),
-        (0.47, "zunehmender Mond"), (0.53, "Vollmond"), (0.72, "abnehmender Mond"),
-        (0.78, "letztes Viertel"), (0.97, "abnehmende Sichel"), (1.01, "Neumond"),
-    ]
-    pname = next(n for t, n in phases if cel.moon_phase < t)
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
     print(
-        f"Himmel: {cel.local_time.strftime('%Y-%m-%d %H:%M %Z')} · "
-        f"Sonne {cel.sun_alt_deg:+.0f}° · Mond {cel.moon_alt_deg:+.0f}° · {pname}"
+        f"Blick nach Süden (DE 51°N/10°E) · {cel.local_time.strftime('%Y-%m-%d %H:%M %Z')}"
     )
     print(
-        f"Grade: brightness={g.brightness:.2f} saturation={g.saturation:.2f} "
-        f"tint=({g.tint_r:+.2f},{g.tint_g:+.2f},{g.tint_b:+.2f})"
+        f"Sonne alt={cel.sun_alt_deg:+.0f}° az={cel.sun_az_deg:.0f}° · "
+        f"Mond alt={cel.moon_alt_deg:+.0f}° az={cel.moon_az_deg:.0f}° · "
+        f"{len(stars)} Sterne im FOV"
+    )
+    print(
+        f"Grade: brightness={g.brightness:.2f} saturation={g.saturation:.2f}"
     )
     return server
 
