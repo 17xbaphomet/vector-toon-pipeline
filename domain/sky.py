@@ -1,8 +1,4 @@
-"""Tageszeitenberechnung: Sonne, Mondphase, Himmelsfarben, Szenen-Grade.
-
-Basis: geografische Breite (Default 51° ≈ Mitte DE), lokale Uhrzeit,
-echte Mondphase (synodischer Monat).
-"""
+"""Tageszeitenberechnung: Sonne, Mondphase, Himmelsfarben, Szenen-Grade."""
 
 from __future__ import annotations
 
@@ -15,12 +11,10 @@ from zoneinfo import ZoneInfo
 SYNODIC_MONTH = 29.530588853
 REF_NEW_MOON = datetime(2000, 1, 6, 18, 14, tzinfo=timezone.utc)
 DEFAULT_LAT_DEG = 51.0
-DEFAULT_LON_DEG = 10.0  # approx central Germany
+DEFAULT_LON_DEG = 10.0
 
 
 class Tageszeit(str, Enum):
-    """Named day period derived from solar altitude."""
-
     NACHT = "nacht"
     MORGENDÄMMERUNG = "morgendaemmerung"
     SONNENAUFGANG = "sonnenaufgang"
@@ -56,7 +50,6 @@ class CelestialState:
     is_day: bool
     local_time: datetime
     tageszeit: Tageszeit
-    # Approximate solar times for this day (local hour float)
     sunrise_hour: float
     sunset_hour: float
     solar_noon_hour: float
@@ -69,9 +62,6 @@ class SceneGrade:
     tint_r: float
     tint_g: float
     tint_b: float
-
-
-# ── time helpers ─────────────────────────────────────────────────────
 
 
 def _julian_date(dt: datetime) -> float:
@@ -94,26 +84,19 @@ def _day_of_year(dt: datetime) -> int:
 
 
 def _solar_declination(doy: int) -> float:
-    """Solar declination in degrees (approx)."""
     return 23.45 * math.sin(math.radians(360.0 / 365.0 * (doy - 81)))
 
 
 def _equation_of_time(doy: int) -> float:
-    """Equation of time in minutes (approx)."""
     B = math.radians(360.0 / 365.0 * (doy - 81))
     return 9.87 * math.sin(2 * B) - 7.53 * math.cos(B) - 1.5 * math.sin(B)
 
 
 def _hour_angle(dt: datetime, lon_deg: float = DEFAULT_LON_DEG) -> float:
-    """Local hour angle in degrees (0 at solar noon)."""
     doy = _day_of_year(dt)
-    eot = _equation_of_time(doy)  # minutes
-    # Local solar time
+    eot = _equation_of_time(doy)
     hour = dt.hour + dt.minute / 60.0 + dt.second / 3600.0
-    # Longitude correction from timezone meridian is approximate;
-    # for Europe/Berlin CET/CEST the standard meridian is 15°E
-    # Use lon relative to 15°
-    lon_corr = (lon_deg - 15.0) / 15.0  # hours
+    lon_corr = (lon_deg - 15.0) / 15.0
     solar_time = hour + eot / 60.0 + lon_corr
     return 15.0 * (solar_time - 12.0)
 
@@ -145,24 +128,15 @@ def sunrise_sunset_hours(
     lat_deg: float = DEFAULT_LAT_DEG,
     lon_deg: float = DEFAULT_LON_DEG,
 ) -> tuple[float, float, float]:
-    """
-    Approximate sunrise, solar noon, sunset as local clock hours (float).
-
-    Uses solar altitude = 0° (geometric horizon, no refraction).
-    """
     doy = _day_of_year(dt)
     decl = math.radians(_solar_declination(doy))
     lat = math.radians(lat_deg)
-    cos_ha = -math.tan(lat) * math.tan(decl)
-    cos_ha = max(-1.0, min(1.0, cos_ha))
-    ha = math.degrees(math.acos(cos_ha))  # degrees from noon to rise/set
-
-    eot = _equation_of_time(doy) / 60.0  # hours
+    cos_ha = max(-1.0, min(1.0, -math.tan(lat) * math.tan(decl)))
+    ha = math.degrees(math.acos(cos_ha))
+    eot = _equation_of_time(doy) / 60.0
     lon_corr = (lon_deg - 15.0) / 15.0
     noon = 12.0 - eot - lon_corr
-    sunrise = noon - ha / 15.0
-    sunset = noon + ha / 15.0
-    return sunrise, noon, sunset
+    return noon - ha / 15.0, noon, noon + ha / 15.0
 
 
 def tageszeit_from_altitude(
@@ -172,11 +146,10 @@ def tageszeit_from_altitude(
     sunset: float,
     noon: float,
 ) -> Tageszeit:
-    """Map solar altitude + clock context → named Tageszeit."""
-    if sun_alt_deg < -12:
+    # Night only after astronomical twilight (~-18°); civil stays "dämmerung"
+    if sun_alt_deg < -18:
         return Tageszeit.NACHT
     if sun_alt_deg < -4:
-        # Dawn vs dusk by clock relative to noon
         return Tageszeit.MORGENDÄMMERUNG if hour < noon else Tageszeit.ABENDDÄMMERUNG
     if sun_alt_deg < 2:
         return Tageszeit.SONNENAUFGANG if hour < noon else Tageszeit.SONNENUNTERGANG
@@ -187,11 +160,7 @@ def tageszeit_from_altitude(
     return Tageszeit.NACHMITTAG
 
 
-# ── moon ─────────────────────────────────────────────────────────────
-
-
 def moon_phase_at(dt: datetime) -> tuple[float, float]:
-    """Real lunar phase (0=new…0.5=full…1=new) and illumination 0..1."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     days = (dt.astimezone(timezone.utc) - REF_NEW_MOON).total_seconds() / 86400.0
@@ -207,7 +176,6 @@ def _moon_altitude_azimuth(
     moon_az = (sun_az + phase * 360.0) % 360.0
     hour = dt.hour + dt.minute / 60.0
     moon_hour = (hour - phase * 12.0) % 24.0
-    # Reuse solar geometry with shifted hour angle
     fake = dt.replace(
         hour=int(moon_hour) % 24,
         minute=int((moon_hour % 1) * 60),
@@ -218,9 +186,6 @@ def _moon_altitude_azimuth(
     return alt, moon_az
 
 
-# ── public API ───────────────────────────────────────────────────────
-
-
 def celestial_at(
     dt: datetime | None = None,
     *,
@@ -228,7 +193,6 @@ def celestial_at(
     lat_deg: float = DEFAULT_LAT_DEG,
     lon_deg: float = DEFAULT_LON_DEG,
 ) -> CelestialState:
-    """Full celestial + Tageszeit state for a local datetime."""
     if dt is None:
         dt = datetime.now(ZoneInfo(tz))
     elif dt.tzinfo is None:
@@ -251,7 +215,7 @@ def celestial_at(
         moon_az_deg=moon_az,
         moon_phase=phase,
         moon_illumination=illum,
-        is_day=sun_alt > 0.0,
+        is_day=sun_alt > -6.0,  # civil twilight still counts as "day-ish"
         local_time=dt,
         tageszeit=tz_enum,
         sunrise_hour=sunrise,
@@ -261,65 +225,91 @@ def celestial_at(
 
 
 def sky_colors(state: CelestialState) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    """Sky gradient (top, bottom) from Tageszeit / sun altitude."""
+    """
+    Sky gradient — extended bright twilight.
+    Full night sky only below ~-15° (well after civil dusk / before civil dawn).
+    """
     alt = state.sun_alt_deg
-    if alt > 15:
+    if alt > 10:
         return (90, 170, 230), (180, 220, 245)
     if alt > 0:
-        t = alt / 15.0
-        return _lerp((255, 140, 80), (90, 170, 230), t), _lerp(
-            (255, 200, 120), (180, 220, 245), t
+        t = alt / 10.0
+        return _lerp((255, 150, 90), (90, 170, 230), t), _lerp(
+            (255, 200, 130), (180, 220, 245), t
         )
-    if alt > -8:
-        t = (alt + 8) / 8.0
-        return _lerp((20, 24, 60), (255, 140, 80), t), _lerp(
-            (40, 40, 80), (255, 200, 120), t
+    if alt > -6:
+        # Civil twilight — still warm / bright, not night
+        t = (alt + 6) / 6.0
+        return _lerp((120, 90, 140), (255, 150, 90), t), _lerp(
+            (160, 120, 100), (255, 200, 130), t
+        )
+    if alt > -12:
+        # Nautical twilight
+        t = (alt + 12) / 6.0
+        return _lerp((40, 45, 90), (120, 90, 140), t), _lerp(
+            (60, 55, 90), (160, 120, 100), t
+        )
+    if alt > -18:
+        # Astronomical twilight → night
+        t = (alt + 18) / 6.0
+        return _lerp((12, 16, 42), (40, 45, 90), t), _lerp(
+            (28, 32, 58), (60, 55, 90), t
         )
     return (10, 14, 40), (25, 30, 55)
 
 
 def scene_grade(state: CelestialState) -> SceneGrade:
-    """Full-scene brightness/saturation/tint from solar altitude."""
+    """
+    Full-scene grade with longer, brighter twilight.
+
+    Evening stays readable past sunset; morning brightens early in civil dawn.
+    Deep night floor is milder so it never goes pitch-black too soon.
+    """
     alt = state.sun_alt_deg
-    if alt > 20:
+    if alt > 12:
         return SceneGrade(1.0, 1.0, 0.0, 0.0, 0.0)
-    if alt > 5:
-        t = (alt - 5) / 15.0
-        return SceneGrade(
-            brightness=0.92 + 0.08 * t,
-            saturation=1.05 - 0.05 * t,
-            tint_r=0.06 * (1 - t),
-            tint_g=0.02 * (1 - t),
-            tint_b=-0.03 * (1 - t),
-        )
     if alt > 0:
-        t = alt / 5.0
+        # Day → soft golden, still nearly full brightness
+        t = alt / 12.0
         return SceneGrade(
-            brightness=0.78 + 0.14 * t,
-            saturation=1.1,
-            tint_r=0.12 * (1 - 0.5 * t),
-            tint_g=0.04 * (1 - 0.5 * t),
-            tint_b=-0.06 * (1 - 0.5 * t),
+            brightness=0.90 + 0.10 * t,
+            saturation=1.05 - 0.05 * t,
+            tint_r=0.05 * (1 - t),
+            tint_g=0.02 * (1 - t),
+            tint_b=-0.02 * (1 - t),
         )
     if alt > -6:
-        t = (alt + 6) / 6.0
+        # Civil twilight — clearly lit scene
+        t = (alt + 6) / 6.0  # 0 at -6°, 1 at 0°
         return SceneGrade(
-            brightness=0.45 + 0.33 * t,
-            saturation=0.55 + 0.45 * t,
-            tint_r=0.04 * t,
-            tint_g=0.0,
-            tint_b=0.10 * (1 - t) + 0.02 * t,
+            brightness=0.72 + 0.18 * t,
+            saturation=0.85 + 0.15 * t,
+            tint_r=0.08 * (1 - 0.3 * t),
+            tint_g=0.02 * (1 - t),
+            tint_b=0.04 * (1 - t),
         )
     if alt > -12:
+        # Nautical twilight
         t = (alt + 12) / 6.0
         return SceneGrade(
-            brightness=0.28 + 0.17 * t,
-            saturation=0.35 + 0.20 * t,
-            tint_r=-0.02,
+            brightness=0.50 + 0.22 * t,
+            saturation=0.55 + 0.30 * t,
+            tint_r=0.02,
             tint_g=0.0,
-            tint_b=0.12,
+            tint_b=0.08 * (1 - 0.5 * t),
         )
-    return SceneGrade(0.22, 0.30, -0.03, 0.0, 0.14)
+    if alt > -18:
+        # Astronomical twilight
+        t = (alt + 18) / 6.0
+        return SceneGrade(
+            brightness=0.38 + 0.12 * t,
+            saturation=0.40 + 0.15 * t,
+            tint_r=-0.01,
+            tint_g=0.0,
+            tint_b=0.10,
+        )
+    # Deep night — still not pitch black
+    return SceneGrade(0.36, 0.38, -0.02, 0.0, 0.12)
 
 
 def _lerp(
@@ -357,7 +347,6 @@ def alt_az_to_screen(
 
 
 def format_hour(h: float) -> str:
-    """Format float hour as HH:MM."""
     h = h % 24.0
     hh = int(h)
     mm = int((h - hh) * 60)
