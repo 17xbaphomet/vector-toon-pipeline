@@ -12,7 +12,6 @@ THIGH_LEN = 50.0
 SHIN_LEN = 48.0
 UPPER_ARM_LEN = 40.0
 FOREARM_LEN = 38.0
-# MUST be < THIGH+SHIN or feet have zero horizontal reach and IK breaks
 HIP_HEIGHT = 86.0
 
 
@@ -67,11 +66,7 @@ def grounded_walk(
     bob_amp: float = 3.5,
     facing: float = 1.0,
 ) -> dict:
-    """
-    Grounded walk. Positive facing = walk toward +x (right on screen).
-
-    Foot targets progress so the swing foot moves FORWARD (+x when facing right).
-    """
+    """Grounded walk — IK angles as computed (no post-flip). Movement was good."""
     step_period = cycle / 2.0
     scroll_speed = step_length / step_period
     body_world_x = scroll_speed * t
@@ -94,22 +89,25 @@ def grounded_walk(
     bob = bob_amp * abs(math.sin(math.pi * total_steps))
 
     def to_local(wx: float, wy: float) -> tuple[float, float]:
-        # Local X: positive = forward in facing direction
         return ((wx - body_world_x) * facing, wy)
 
     left_foot = to_local(left_wx, left_wy)
     right_foot = to_local(right_wx, right_wy)
     hip = (0.0, -(hip_height - bob))
+
     l_th, l_sh, _ = _two_bone_ik(hip, left_foot, thigh_len, shin_len)
     r_th, r_sh, _ = _two_bone_ik(hip, right_foot, thigh_len, shin_len)
 
-    # Invert X angles so forward swing matches screen +x when facing right.
-    # (User reported X direction wrong — negate hip/shin world angles.)
-    l_th, l_sh = -l_th, -l_sh
-    r_th, r_sh = -r_th, -r_sh
+    # Arms: opposite phase to legs (natural walk)
+    # When left leg forward (+), left arm goes back (-)
+    l_ua = -0.65 * l_th
+    r_ua = -0.65 * r_th
+    # Elbow: slight bend relative to upper arm (always flexed a bit)
+    # absolute forearm angle = upper + relative flex toward body front
+    # relative flex ≈ -40° keeps hand in front of back-swung arm naturally
+    l_fa = l_ua - 40.0
+    r_fa = r_ua - 40.0
 
-    l_ua, r_ua = -0.55 * l_th, -0.55 * r_th
-    l_fa, r_fa = l_ua - 35.0, r_ua - 35.0
     bones = {
         "body": Affine.translate(0.0, bob),
         "head": Affine.rotate(2.0 * math.sin(2 * math.pi * t / cycle)),

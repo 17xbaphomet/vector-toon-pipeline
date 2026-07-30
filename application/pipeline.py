@@ -68,20 +68,14 @@ class VideoGenerationPipeline:
         try:
             self._transition(PipelineState.PARSING)
             self.work_dir.mkdir(parents=True, exist_ok=True)
-
             scene = self._maybe_synthesize(scene)
-
             self._transition(PipelineState.EXTRACTING_VISEMES)
             visemes = self._extract_visemes(scene)
-
             self._transition(PipelineState.GENERATING_CLIPS)
-
             self._transition(PipelineState.COMPOSING)
             frames, backgrounds = self._compose_timeline(scene, visemes)
-
             self._transition(PipelineState.RENDERING)
             frames_dir = self._render_frames(scene, frames, backgrounds)
-
             self._transition(PipelineState.ENCODING)
             audio = scene.audio_path
             if audio is None:
@@ -92,7 +86,6 @@ class VideoGenerationPipeline:
                 output_path=Path(output_path),
                 fps=scene.fps,
             )
-
             self._transition(PipelineState.DONE)
             return final
         except Exception as exc:
@@ -114,7 +107,6 @@ class VideoGenerationPipeline:
             raise PipelineStageError(
                 "SYNTHESIZING", "dialogue set but no TTSProvider injected"
             )
-
         self._transition(PipelineState.SYNTHESIZING)
         out = self.work_dir / "speech.wav"
         self.on_progress(self.state, f"TTS: {scene.dialogue[:60]}…")
@@ -137,10 +129,6 @@ class VideoGenerationPipeline:
     def _compose_timeline(
         self, scene: SceneSpec, visemes: Sequence[VisemeCue]
     ) -> tuple[list[FrameState], Sequence[BackgroundLayer]]:
-        """
-        Grounded walk: stance foot locked in world space,
-        background scrolls opposite to facing so character appears to walk forward.
-        """
         self.on_progress(self.state, "Composing FrameState sequence")
         frames: list[FrameState] = []
         n = max(1, int(scene.duration * scene.fps))
@@ -165,33 +153,25 @@ class VideoGenerationPipeline:
         for rule in getattr(rig, "rules", ()):
             if rule.type.value == "walk":
                 step_length = float(
-                    rule.params.get(
-                        "step_length",
-                        rule.params.get("stride", step_length),
-                    )
+                    rule.params.get("step_length", rule.params.get("stride", step_length))
                 )
                 cycle = float(rule.params.get("cycle", cycle))
                 bob_amp = float(rule.params.get("bob_amp", bob_amp))
 
-        # Facing from path: left→right path = face right (+1)
+        # Path direction → facing (+1 = face right / walk right)
         facing = 1.0
         if walk_path and len(walk_path) >= 2:
             p0, p1 = walk_path[0], walk_path[-1]
             facing = 1.0 if (p1[0] - p0[0]) >= 0 else -1.0
 
         sample = grounded_walk(
-            0.0,
-            step_length=step_length,
-            cycle=cycle,
-            bob_amp=bob_amp,
-            facing=facing,
+            0.0, step_length=step_length, cycle=cycle, bob_amp=bob_amp, facing=facing
         )
         scroll_speed = sample["scroll_speed"]
 
-        # Background scrolls OPPOSITE to walk direction:
-        # facing right (+1) → bg moves left → character appears to walk right
-        # Was inverted for the user — use +facing so scroll matches visual walk dir
-        # parallax_offset: ox = scroll_x * t; negative scroll_x moves bg left on screen
+        # Orientation fix: background must scroll opposite to facing so the
+        # character appears to walk in the direction it faces.
+        # facing +1 (right) → scroll_x negative → bg moves left → walks right
         backgrounds = tuple(
             BackgroundLayer(
                 path=layer.path,
@@ -223,12 +203,10 @@ class VideoGenerationPipeline:
                     facing=facing,
                 )
                 bones = gw["bones"]
-                rx, ry = (screen_x, screen_y) if keep_centered else (screen_x, screen_y)
-                root_rot = 0.0 if facing > 0 else 180.0
+                rx, ry = screen_x, screen_y
             else:
                 bones = {}
                 rx, ry = scene.width / 2, screen_y
-                root_rot = 0.0
                 facing = 1.0
 
             talk_bob = head_bob(t, amplitude=2.0, freq=2.5)
@@ -243,7 +221,8 @@ class VideoGenerationPipeline:
                     jaw_open=jaw,
                     bone_transforms=bones,
                     root_position=(rx, ry),
-                    root_rotation_deg=root_rot,
+                    root_rotation_deg=0.0 if facing > 0 else 180.0,
+                    # Positive scale = face right (body_side.svg is drawn facing right)
                     scale=char.default_scale * facing,
                     camera=CameraState(),
                 )
@@ -270,7 +249,6 @@ class VideoGenerationPipeline:
         self.on_progress(self.state, f"Rendering {len(frames)} frames")
         frames_dir = self.work_dir / "frames"
         frames_dir.mkdir(parents=True, exist_ok=True)
-
         rig_cache: dict[str, object] = {}
         for i, state in enumerate(frames):
             if state.character_id not in rig_cache:
