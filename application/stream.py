@@ -70,7 +70,7 @@ class ContinuousWalkStream:
             scale=getattr(rig, "default_scale", 1.15),
             character_id=rig.id,
         )
-        self.route = route or generate_route(length=80000.0, seed=self.cfg.route_seed)
+        self.route = route or generate_route(length=15000.0, seed=self.cfg.route_seed)
         self._t0 = time.perf_counter()
         self._running = False
         sample = grounded_walk(0.0, step_length=self.cfg.step_length, cycle=self.cfg.cycle)
@@ -317,6 +317,10 @@ class ContinuousWalkStream:
 
             state = self._compose_state(t)
             body_x = self._scroll_speed * t
+            # Infinite world: always generate ahead, prune far behind
+            self.route.ensure_ahead(body_x, look_ahead=15000.0)
+            if frame_i % 48 == 0:
+                self.route.prune_behind(body_x, keep_behind=10000.0)
             cel = celestial_at(self._scene_datetime(t), tz=self.cfg.tz)
 
             canvas = self._make_sky_canvas(cel)
@@ -411,8 +415,9 @@ def run_mjpeg_server(
         moods[r.mood.value] = moods.get(r.mood.value, 0) + 1
     print(f"MJPEG stream → http://{host}:{port}/  (Ctrl+C to stop)")
     print(
-        f"Organisch: {len(stream.route.features)} Features · "
-        f"Regionen {', '.join(f'{k}×{v}' for k, v in moods.items())}"
+        f"Organisch ∞: {len(stream.route.features)} Features · "
+        f"Regionen {', '.join(f'{k}×{v}' for k, v in moods.items())} · "
+        f"generiert bis {stream.route._generated_until:.0f}"
     )
     return server
 
