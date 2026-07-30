@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <!-- Village street -->
+  <rect y="360" width="1600" height="120" fill="#9E9E9E"/>
+  <rect y="360" width="1600" height="8" fill="#757575"/>
+  <!-- Sidewalks -->
+  <rect y="360" width="1600" height="18" fill="#BDBDBD"/>
+  <rect y="430" width="1600" height="50" fill="#8D6E63" opacity="0.3"/>
+  <!-- Road center dashes -->
+  <g fill="#FFF9C4">
+    <rect x="40" y="400" width="40" height="4"/><rect x="140" y="400" width="40" height="4"/>
+    <rect x="240" y="400" width="40" height="4"/><rect x="340" y="400" width="40" height="4"/>
+    <rect x="440" y="400" width="40" height="4"/><rect x="540" y="400" width="40" height="4"/>
+    <rect x="640" y="400" width="40" height="4"/><rect x="740" y="400" width="40" height="4"/>
+    <rect x="840" y="400" width="40" height="4"/><rect x="940" y="400" width="40" height="4"/>
+    <rect x="1040" y="400" width="40" height="4"/><rect x="1140" y="400" width="40" height="4"/>
+    <rect x="1240" y="400" width="40" height="4"/><rect x="1340" y="400" width="40" height="4"/>
+    <rect x="1440" y="400" width="40" height="4"/>
+  </g>
+  <!-- Flower beds -->
+  <g>
+    <rect x="50" y="350" width="30" height="12" fill="#66BB6A" rx="2"/>
+    <circle cx="58" cy="354" r="3" fill="#EF5350"/><circle cx="70" cy="356" r="3" fill="#FFEE58"/>
+    <rect x="400" y="350" width="30" height="12" fill="#66BB6A" rx="2"/>
+    <circle cx="408" cy="354" r="3" fill="#AB47BC"/><circle cx="420" cy="356" r="3" fill="#EF5350"/>
+    <rect x="900" y="350" width="30" height="12" fill="#66BB6A" rx="2"/>
+    <circle cx="908" cy="354" r="3" fill="#FFEE58"/><circle cx="920" cy="356" r="3" fill="#42A5F5"/>
+  </g>
+</svg>

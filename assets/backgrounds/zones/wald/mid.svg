@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <!-- Dense forest silhouette -->
+  <g fill="#2D5A27">
+    <ellipse cx="50" cy="220" rx="40" ry="90"/><ellipse cx="100" cy="200" rx="45" ry="100"/>
+    <ellipse cx="180" cy="210" rx="50" ry="95"/><ellipse cx="260" cy="195" rx="42" ry="105"/>
+    <ellipse cx="340" cy="215" rx="48" ry="92"/><ellipse cx="420" cy="200" rx="55" ry="110"/>
+    <ellipse cx="500" cy="210" rx="40" ry="95"/><ellipse cx="580" cy="195" rx="50" ry="108"/>
+    <ellipse cx="660" cy="220" rx="45" ry="90"/><ellipse cx="740" cy="200" rx="52" ry="105"/>
+    <ellipse cx="820" cy="215" rx="40" ry="95"/><ellipse cx="900" cy="198" rx="55" ry="112"/>
+    <ellipse cx="980" cy="210" rx="48" ry="98"/><ellipse cx="1060" cy="200" rx="42" ry="105"/>
+    <ellipse cx="1140" cy="218" rx="50" ry="92"/><ellipse cx="1220" cy="195" rx="55" ry="110"/>
+    <ellipse cx="1300" cy="210" rx="45" ry="98"/><ellipse cx="1380" cy="200" rx="50" ry="108"/>
+    <ellipse cx="1460" cy="215" rx="40" ry="95"/><ellipse cx="1540" cy="205" rx="48" ry="100"/>
+  </g>
+  <!-- Lighter mid trees -->
+  <g fill="#3D7A35" opacity="0.85">
+    <ellipse cx="120" cy="250" rx="30" ry="70"/><ellipse cx="300" cy="240" rx="35" ry="80"/>
+    <ellipse cx="500" cy="245" rx="28" ry="75"/><ellipse cx="700" cy="238" rx="32" ry="78"/>
+    <ellipse cx="900" cy="248" rx="30" ry="72"/><ellipse cx="1100" cy="240" rx="35" ry="80"/>
+    <ellipse cx="1300" cy="245" rx="28" ry="74"/><ellipse cx="1500" cy="242" rx="32" ry="76"/>
+  </g>
+</svg>

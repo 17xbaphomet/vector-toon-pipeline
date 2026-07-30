@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <rect y="350" width="1600" height="130" fill="#3E5C2E"/>
+  <rect y="350" width="1600" height="12" fill="#2E4A22"/>
+  <!-- Forest path -->
+  <path d="M0,390 Q400,385 800,392 T1600,388 L1600,420 Q800,425 0,418 Z" fill="#5D4A32" opacity="0.8"/>
+  <!-- Undergrowth -->
+  <g fill="#4A6B35">
+    <ellipse cx="100" cy="360" rx="25" ry="12"/><ellipse cx="250" cy="358" rx="20" ry="10"/>
+    <ellipse cx="450" cy="362" rx="30" ry="14"/><ellipse cx="700" cy="359" rx="22" ry="11"/>
+    <ellipse cx="950" cy="361" rx="28" ry="13"/><ellipse cx="1200" cy="358" rx="24" ry="12"/>
+    <ellipse cx="1400" cy="360" rx="26" ry="11"/>
+  </g>
+  <!-- Scattered leaves -->
+  <g fill="#6B8E3A" opacity="0.5">
+    <circle cx="180" cy="400" r="3"/><circle cx="520" cy="410" r="2"/>
+    <circle cx="860" cy="405" r="3"/><circle cx="1200" cy="415" r="2"/>
+    <circle cx="1450" cy="400" r="3"/>
+  </g>
+</svg>

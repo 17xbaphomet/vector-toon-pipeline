@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <!-- Soft hills / horizon -->
+  <path d="M0,280 Q200,240 400,270 T800,250 T1200,275 T1600,255 L1600,480 L0,480 Z" fill="#A8C97A" opacity="0.9"/>
+  <path d="M0,310 Q300,280 600,300 T1100,290 T1600,305 L1600,480 L0,480 Z" fill="#8FBC5A"/>
+  <!-- Distant trees row -->
+  <g fill="#4A7A3A" opacity="0.6">
+    <ellipse cx="150" cy="275" rx="18" ry="28"/><rect x="146" y="290" width="8" height="20" fill="#5D4037"/>
+    <ellipse cx="420" cy="268" rx="22" ry="32"/><rect x="416" y="285" width="8" height="22" fill="#5D4037"/>
+    <ellipse cx="780" cy="272" rx="16" ry="26"/><rect x="776" y="288" width="8" height="18" fill="#5D4037"/>
+    <ellipse cx="1100" cy="265" rx="20" ry="30"/><rect x="1096" y="282" width="8" height="20" fill="#5D4037"/>
+    <ellipse cx="1450" cy="270" rx="17" ry="27"/><rect x="1446" y="286" width="8" height="18" fill="#5D4037"/>
+  </g>
+</svg>

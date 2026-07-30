@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <rect y="360" width="1600" height="120" fill="#616161"/>
+  <rect y="360" width="1600" height="10" fill="#424242"/>
+  <!-- Sidewalk -->
+  <rect y="360" width="1600" height="20" fill="#9E9E9E"/>
+  <g stroke="#757575" stroke-width="1" opacity="0.4">
+    <line x1="0" y1="370" x2="1600" y2="370"/>
+  </g>
+  <!-- Lane markings -->
+  <g fill="#FFEE58">
+    <rect x="30" y="410" width="50" height="5"/><rect x="130" y="410" width="50" height="5"/>
+    <rect x="230" y="410" width="50" height="5"/><rect x="330" y="410" width="50" height="5"/>
+    <rect x="430" y="410" width="50" height="5"/><rect x="530" y="410" width="50" height="5"/>
+    <rect x="630" y="410" width="50" height="5"/><rect x="730" y="410" width="50" height="5"/>
+    <rect x="830" y="410" width="50" height="5"/><rect x="930" y="410" width="50" height="5"/>
+    <rect x="1030" y="410" width="50" height="5"/><rect x="1130" y="410" width="50" height="5"/>
+    <rect x="1230" y="410" width="50" height="5"/><rect x="1330" y="410" width="50" height="5"/>
+    <rect x="1430" y="410" width="50" height="5"/>
+  </g>
+  <!-- Manhole -->
+  <ellipse cx="400" cy="430" rx="12" ry="6" fill="#424242"/>
+  <ellipse cx="1100" cy="435" rx="12" ry="6" fill="#424242"/>
+</svg>

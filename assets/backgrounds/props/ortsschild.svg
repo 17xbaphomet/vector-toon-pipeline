@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120">
+  <!-- German town entrance sign (Zeichen 310 style simplified) -->
+  <!-- Post -->
+  <rect x="95" y="70" width="10" height="50" fill="#757575"/>
+  <!-- Yellow diamond backing (warning-style optional) omitted; classic place-name plate -->
+  <rect x="20" y="10" width="160" height="60" rx="4" fill="#F5F5F5" stroke="#212121" stroke-width="3"/>
+  <!-- Inner border -->
+  <rect x="26" y="16" width="148" height="48" rx="2" fill="none" stroke="#212121" stroke-width="1.5"/>
+  <!-- Place name (overridden at render time via text overlay if needed) -->
+  <text x="100" y="48" text-anchor="middle" font-family="Arial, Helvetica, sans-serif"
+        font-size="22" font-weight="bold" fill="#212121">Musterdorf</text>
+</svg>

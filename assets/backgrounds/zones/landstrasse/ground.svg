@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <!-- Asphalt country road -->
+  <rect y="370" width="1600" height="110" fill="#6D6D6D"/>
+  <rect y="370" width="1600" height="6" fill="#8D8D8D"/>
+  <!-- Road shoulders (grass) -->
+  <rect y="360" width="1600" height="15" fill="#7CB342"/>
+  <rect y="460" width="1600" height="20" fill="#7CB342"/>
+  <!-- Center line dashed -->
+  <g fill="#FFF176">
+    <rect x="20" y="415" width="45" height="4"/><rect x="120" y="415" width="45" height="4"/>
+    <rect x="220" y="415" width="45" height="4"/><rect x="320" y="415" width="45" height="4"/>
+    <rect x="420" y="415" width="45" height="4"/><rect x="520" y="415" width="45" height="4"/>
+    <rect x="620" y="415" width="45" height="4"/><rect x="720" y="415" width="45" height="4"/>
+    <rect x="820" y="415" width="45" height="4"/><rect x="920" y="415" width="45" height="4"/>
+    <rect x="1020" y="415" width="45" height="4"/><rect x="1120" y="415" width="45" height="4"/>
+    <rect x="1220" y="415" width="45" height="4"/><rect x="1320" y="415" width="45" height="4"/>
+    <rect x="1420" y="415" width="45" height="4"/>
+  </g>
+</svg>

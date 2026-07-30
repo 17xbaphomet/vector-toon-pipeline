@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480">
+  <path d="M0,260 Q400,220 800,250 T1600,240 L1600,480 L0,480 Z" fill="#81C784"/>
+  <path d="M0,300 Q500,280 1000,295 T1600,290 L1600,480 L0,480 Z" fill="#66BB6A"/>
+  <!-- Alleebäume -->
+  <g>
+    <g transform="translate(100,200)">
+      <rect x="18" y="60" width="10" height="80" fill="#5D4037"/>
+      <ellipse cx="23" cy="50" rx="35" ry="45" fill="#2E7D32"/>
+    </g>
+    <g transform="translate(350,190)">
+      <rect x="18" y="60" width="10" height="90" fill="#5D4037"/>
+      <ellipse cx="23" cy="45" rx="38" ry="50" fill="#388E3C"/>
+    </g>
+    <g transform="translate(600,205)">
+      <rect x="18" y="55" width="10" height="80" fill="#5D4037"/>
+      <ellipse cx="23" cy="48" rx="32" ry="42" fill="#2E7D32"/>
+    </g>
+    <g transform="translate(850,195)">
+      <rect x="18" y="60" width="10" height="85" fill="#5D4037"/>
+      <ellipse cx="23" cy="50" rx="36" ry="48" fill="#388E3C"/>
+    </g>
+    <g transform="translate(1100,200)">
+      <rect x="18" y="55" width="10" height="80" fill="#5D4037"/>
+      <ellipse cx="23" cy="45" rx="34" ry="46" fill="#2E7D32"/>
+    </g>
+    <g transform="translate(1350,190)">
+      <rect x="18" y="60" width="10" height="90" fill="#5D4037"/>
+      <ellipse cx="23" cy="48" rx="37" ry="49" fill="#388E3C"/>
+    </g>
+  </g>
+</svg>
