@@ -15,9 +15,10 @@ from domain.interfaces import (
     VideoEncoder,
     VisemeExtractor,
 )
-from domain.value_objects import Affine, CameraState, Viseme
+from domain.value_objects import Affine, BackgroundLayer, CameraState
 from domain.procedural import (
     camera_at,
+    facing_from_heading,
     head_bob,
     path_position,
     sample_viseme_at,
@@ -43,8 +44,6 @@ ProgressCallback = Callable[[PipelineState, str], None]
 
 
 class VideoGenerationPipeline:
-    """Deterministic offline cartoon video pipeline. All infrastructure injected."""
-
     def __init__(
         self,
         viseme_extractor: VisemeExtractor,
@@ -70,20 +69,18 @@ class VideoGenerationPipeline:
             self._transition(PipelineState.PARSING)
             self.work_dir.mkdir(parents=True, exist_ok=True)
 
-            # TTS if dialogue present and no audio
             scene = self._maybe_synthesize(scene)
 
             self._transition(PipelineState.EXTRACTING_VISEMES)
             visemes = self._extract_visemes(scene)
 
             self._transition(PipelineState.GENERATING_CLIPS)
-            # clips generated on-the-fly in compose
 
             self._transition(PipelineState.COMPOSING)
-            frames = self._compose_timeline(scene, visemes)
+            frames, backgrounds = self._compose_timeline(scene, visemes)
 
             self._transition(PipelineState.RENDERING)
-            frames_dir = self._render_frames(scene, frames)
+            frames_dir = self._render_frames(scene, frames, backgrounds)
 
             self._transition(PipelineState.ENCODING)
             audio = scene.audio_path
@@ -103,10 +100,6 @@ class VideoGenerationPipeline:
             self.state = PipelineState.FAILED
             self.on_progress(self.state, str(exc))
             raise
-
-    # ------------------------------------------------------------------
-    # Stages
-    # ------------------------------------------------------------------
 
     def _maybe_synthesize(self, scene: SceneSpec) -> SceneSpec:
         if scene.audio_path and Path(scene.audio_path).is_file():
@@ -135,15 +128,19 @@ class VideoGenerationPipeline:
         assert scene.audio_path is not None
         self.on_progress(self.state, f"Extracting visemes from {scene.audio_path}")
         try:
-            transcript = scene.dialogue
-            return self.viseme_extractor.extract(scene.audio_path, transcript=transcript)
+            return self.viseme_extractor.extract(
+                scene.audio_path, transcript=scene.dialogue
+            )
         except Exception as e:
             raise PipelineStageError("EXTRACTING_VISEMES", str(e), e) from e
 
     def _compose_timeline(
         self, scene: SceneSpec, visemes: Sequence[VisemeCue]
-    ) -> list[FrameState]:
-        """Sample at scene.fps: visemes + walk + head bob + camera."""
+    ) -> tuple[list[FrameState], Sequence[BackgroundLayer]]:
+        """
+        Walk: character stays near screen center (profile),
+        world/background scrolls opposite to walk direction.
+        """
         self.on_progress(self.state, "Composing FrameState sequence")
         frames: list[FrameState] = []
         n = max(1, int(scene.duration * scene.fps))
@@ -151,49 +148,101 @@ class VideoGenerationPipeline:
 
         char = scene.characters[0] if scene.characters else None
         if char is None:
-            return frames
+            return frames, scene.backgrounds
 
-        # Load full rig for rules
         try:
             rig = self.asset_repo.load(char.id)
         except Exception:
             rig = char
 
-        walk_params = self._find_action_params(scene, "walk", char.id)
-        walk_path = walk_params.get("path") if walk_params else None
-        walk_speed = float(walk_params.get("speed", 80)) if walk_params else 80.0
+        walk_params = self._find_action_params(scene, "walk", char.id) or {}
+        walk_path = walk_params.get("path")
+        walk_speed = float(walk_params.get("speed", 120))
+        keep_centered = bool(walk_params.get("keep_centered", True))
 
-        # Walk rule defaults from character
-        stride, cycle, bob_amp = 18.0, 0.6, 6.0
+        stride, cycle, bob_amp = 28.0, 0.55, 5.0
         for rule in rig.rules:
             if rule.type.value == "walk":
                 stride = float(rule.params.get("stride", stride))
                 cycle = float(rule.params.get("cycle", cycle))
                 bob_amp = float(rule.params.get("bob_amp", bob_amp))
 
-        default_pos = (scene.width / 2, scene.height * 0.65)
+        # Screen position when centered
+        screen_x = scene.width * 0.4
+        screen_y = scene.height * 0.72
+
+        # Direction of path for bg scroll (constant direction walks)
+        facing = 1.0
+        if walk_path and len(walk_path) >= 2:
+            p0, p1 = walk_path[0], walk_path[-1]
+            facing = 1.0 if (p1[0] - p0[0]) >= 0 else -1.0
+
+        # Override background scroll so world moves opposite to walk
+        # scroll_x positive = bg moves right; we want opposite of facing
+        # When character "walks right", bg should drift left → scroll_x negative
+        # Use walk_speed so scroll rate matches gait
+        bg_scroll_base = -facing * walk_speed  # px/s world motion
+
+        backgrounds = []
+        for layer in scene.backgrounds:
+            # layer.parallax scales the effective scroll
+            backgrounds.append(
+                replace(
+                    layer,
+                    scroll_x=bg_scroll_base * layer.parallax
+                    if walk_path
+                    else layer.scroll_x,
+                )
+                if hasattr(layer, "parallax")
+                else layer
+            )
+        # BackgroundLayer is frozen – rebuild
+        backgrounds = tuple(
+            BackgroundLayer(
+                path=layer.path,
+                z_index=layer.z_index,
+                parallax=layer.parallax,
+                scroll_x=bg_scroll_base * max(layer.parallax, 0.05) if walk_path else layer.scroll_x,
+                scroll_y=layer.scroll_y,
+                repeat_x=True if walk_path else layer.repeat_x,
+                repeat_y=layer.repeat_y,
+            )
+            for layer in scene.backgrounds
+        )
 
         for i in range(n):
             t = i * dt
             viseme, jaw = sample_viseme_at(visemes, t)
 
-            # Root position from walk path or center
             if walk_path:
                 pts = [tuple(p) for p in walk_path]  # type: ignore[arg-type]
-                (rx, ry), heading = path_position(t, pts, speed=walk_speed)
-                bones = walk_cycle_pose(t, stride=stride, bob_amp=bob_amp, cycle_duration=cycle)
-                root_rot = heading
+                (wx, wy), heading, dist = path_position(t, pts, speed=walk_speed)
+                facing = facing_from_heading(heading)
+                bones = walk_cycle_pose(
+                    t, stride=stride, bob_amp=bob_amp, cycle_duration=cycle
+                )
+                if keep_centered:
+                    rx, ry = screen_x, screen_y
+                else:
+                    rx, ry = wx, wy
+                # store facing in scale sign convention via root_rotation or custom:
+                # use root_rotation_deg: 0 = right, 180 = left
+                root_rot = 0.0 if facing > 0 else 180.0
             else:
-                rx, ry = default_pos
+                rx, ry = scene.width / 2, screen_y
                 root_rot = 0.0
                 bones = {}
+                facing = 1.0
 
-            # Head bob (talk or idle)
-            bob = head_bob(t, amplitude=4.0, freq=2.5)
+            bob = head_bob(t, amplitude=3.0, freq=1.0 / max(cycle, 0.1))
             head_tf = bones.get("head", Affine.identity())
             bones["head"] = head_tf.compose(Affine.translate(0.0, bob))
 
+            # Camera follows world distance so parallax keeps working
             cam = camera_at(t, scene.actions, CameraState())
+            if walk_path and keep_centered:
+                # world scrolled via scroll_x; camera can stay 0
+                cam = CameraState(x=0.0, y=0.0, zoom=1.0)
 
             frames.append(
                 FrameState(
@@ -204,11 +253,12 @@ class VideoGenerationPipeline:
                     bone_transforms=bones,
                     root_position=(rx, ry),
                     root_rotation_deg=root_rot,
-                    scale=char.default_scale,
+                    scale=char.default_scale * facing,  # negative scale = flip
                     camera=cam,
                 )
             )
-        return frames
+
+        return frames, backgrounds
 
     def _find_action_params(
         self, scene: SceneSpec, action_type: str, character_id: str
@@ -221,7 +271,10 @@ class VideoGenerationPipeline:
         return None
 
     def _render_frames(
-        self, scene: SceneSpec, frames: list[FrameState]
+        self,
+        scene: SceneSpec,
+        frames: list[FrameState],
+        backgrounds: Sequence[BackgroundLayer],
     ) -> Path:
         self.on_progress(self.state, f"Rendering {len(frames)} frames")
         frames_dir = self.work_dir / "frames"
@@ -237,15 +290,11 @@ class VideoGenerationPipeline:
                 state,
                 rig,  # type: ignore[arg-type]
                 (scene.width, scene.height),
-                backgrounds=scene.backgrounds or None,
+                backgrounds=backgrounds or None,
             )
             if rendered.resolve() != out.resolve():
                 out.write_bytes(rendered.read_bytes())
         return frames_dir
-
-    # ------------------------------------------------------------------
-    # FSM
-    # ------------------------------------------------------------------
 
     _ALLOWED: Mapping[PipelineState, set[PipelineState]] = {
         PipelineState.PENDING: {PipelineState.PARSING},

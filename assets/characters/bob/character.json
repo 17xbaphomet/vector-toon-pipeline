@@ -1,22 +1,29 @@
 {
   "id": "bob",
   "base_svg": "body.svg",
-  "default_scale": 1.0,
-  "bone_order": ["root", "body", "head", "jaw", "left_arm", "right_arm", "left_leg", "right_leg"],
+  "default_scale": 1.15,
+  "bone_order": [
+    "root", "body", "head",
+    "left_thigh", "left_shin", "right_thigh", "right_shin",
+    "left_upper_arm", "left_forearm", "right_upper_arm", "right_forearm"
+  ],
   "layers": {},
   "bones": [
-    {"id": "root", "parent_id": null, "pivot_x": 100, "pivot_y": 280},
-    {"id": "body", "parent_id": "root", "pivot_x": 100, "pivot_y": 180, "layer_id": "body"},
-    {"id": "head", "parent_id": "body", "pivot_x": 100, "pivot_y": 90, "layer_id": "head", "min_angle_deg": -25, "max_angle_deg": 25},
-    {"id": "jaw", "parent_id": "head", "pivot_x": 100, "pivot_y": 110, "layer_id": "jaw", "min_angle_deg": 0, "max_angle_deg": 35},
-    {"id": "left_arm", "parent_id": "body", "pivot_x": 55, "pivot_y": 150, "layer_id": "left_arm", "min_angle_deg": -60, "max_angle_deg": 60},
-    {"id": "right_arm", "parent_id": "body", "pivot_x": 145, "pivot_y": 150, "layer_id": "right_arm", "min_angle_deg": -60, "max_angle_deg": 60},
-    {"id": "left_leg", "parent_id": "body", "pivot_x": 84, "pivot_y": 235, "layer_id": "left_leg", "min_angle_deg": -40, "max_angle_deg": 40},
-    {"id": "right_leg", "parent_id": "body", "pivot_x": 116, "pivot_y": 235, "layer_id": "right_leg", "min_angle_deg": -40, "max_angle_deg": 40}
+    {"id": "root", "parent_id": null, "pivot_x": 80, "pivot_y": 280},
+    {"id": "body", "parent_id": "root", "pivot_x": 80, "pivot_y": 155, "layer_id": "body"},
+    {"id": "head", "parent_id": "body", "pivot_x": 88, "pivot_y": 75, "layer_id": "head", "min_angle_deg": -20, "max_angle_deg": 20},
+    {"id": "left_thigh", "parent_id": "body", "pivot_x": 70, "pivot_y": 200, "layer_id": "left_thigh", "min_angle_deg": -45, "max_angle_deg": 45},
+    {"id": "left_shin", "parent_id": "left_thigh", "pivot_x": 70, "pivot_y": 250, "layer_id": "left_shin", "min_angle_deg": -80, "max_angle_deg": 5},
+    {"id": "right_thigh", "parent_id": "body", "pivot_x": 90, "pivot_y": 200, "layer_id": "right_thigh", "min_angle_deg": -45, "max_angle_deg": 45},
+    {"id": "right_shin", "parent_id": "right_thigh", "pivot_x": 90, "pivot_y": 250, "layer_id": "right_shin", "min_angle_deg": -80, "max_angle_deg": 5},
+    {"id": "left_upper_arm", "parent_id": "body", "pivot_x": 70, "pivot_y": 120, "layer_id": "left_upper_arm", "min_angle_deg": -60, "max_angle_deg": 60},
+    {"id": "left_forearm", "parent_id": "left_upper_arm", "pivot_x": 70, "pivot_y": 160, "layer_id": "left_forearm", "min_angle_deg": -90, "max_angle_deg": 0},
+    {"id": "right_upper_arm", "parent_id": "body", "pivot_x": 90, "pivot_y": 120, "layer_id": "right_upper_arm", "min_angle_deg": -60, "max_angle_deg": 60},
+    {"id": "right_forearm", "parent_id": "right_upper_arm", "pivot_x": 90, "pivot_y": 160, "layer_id": "right_forearm", "min_angle_deg": -90, "max_angle_deg": 0}
   ],
   "rules": [
-    {"type": "walk", "params": {"stride": 18, "cycle": 0.6, "bob_amp": 6}},
+    {"type": "walk", "params": {"stride": 28, "cycle": 0.55, "bob_amp": 5}},
     {"type": "jaw", "params": {"bone": "jaw", "scale": 1.0}},
-    {"type": "bob", "params": {"bone": "head", "amp": 4, "freq": 2.5}}
+    {"type": "bob", "params": {"bone": "head", "amp": 3, "freq": 1.8}}
   ]
 }

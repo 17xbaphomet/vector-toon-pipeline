@@ -4,12 +4,12 @@
   "fps": 24,
   "duration": 6.0,
   "audio_path": null,
-  "dialogue": "Hallo! Ich bin Bob, der Cartoon. Ich laufe und spreche gleichzeitig auf Deutsch.",
+  "dialogue": "Hallo! Ich bin Bob. Ich laufe von links nach rechts, und der Hintergrund bewegt sich gegen die Laufrichtung.",
   "voice_id": "de_DE-thorsten-medium",
   "backgrounds": [
-    {"path": "assets/backgrounds/sky.svg", "z_index": 0, "parallax": 0.1, "scroll_x": 5, "repeat_x": true},
-    {"path": "assets/backgrounds/hills.svg", "z_index": 1, "parallax": 0.4, "scroll_x": 20, "repeat_x": true},
-    {"path": "assets/backgrounds/ground.svg", "z_index": 2, "parallax": 1.0, "scroll_x": 40, "repeat_x": true}
+    {"path": "assets/backgrounds/sky.svg", "z_index": 0, "parallax": 0.15, "scroll_x": 0, "repeat_x": true},
+    {"path": "assets/backgrounds/hills.svg", "z_index": 1, "parallax": 0.45, "scroll_x": 0, "repeat_x": true},
+    {"path": "assets/backgrounds/ground.svg", "z_index": 2, "parallax": 1.0, "scroll_x": 0, "repeat_x": true}
   ],
   "characters": [
     {
@@ -18,7 +18,7 @@
       "layer_paths": {},
       "mouth_shapes": {},
       "bone_order": [],
-      "default_scale": 1.0
+      "default_scale": 1.15
     }
   ],
   "actions": [
@@ -27,12 +27,11 @@
       "type": "walk",
       "timing": {"start": 0.0, "end": 6.0},
       "character_id": "bob",
-      "params": {"path": [[80, 350], [720, 350]], "speed": 110}
-    },
-    {
-      "type": "camera",
-      "timing": {"start": 0.0, "end": 6.0},
-      "params": {"from": [0, 0], "to": [80, 0]}
+      "params": {
+        "path": [[0, 350], [2000, 350]],
+        "speed": 140,
+        "keep_centered": true
+      }
     }
   ]
 }

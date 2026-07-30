@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="320" viewBox="0 0 160 320">
+  <!-- Profile (facing right). Limb pivots marked by data-pivot. -->
+  <!-- Torso -->
+  <ellipse cx="80" cy="155" rx="28" ry="55" fill="#4A90D9" stroke="#2C5F8A" stroke-width="2"/>
+  <!-- Head profile -->
+  <circle cx="88" cy="75" r="32" fill="#F5CBA7" stroke="#D4A574" stroke-width="2"/>
+  <ellipse cx="112" cy="78" rx="10" ry="8" fill="#F5CBA7" stroke="#D4A574" stroke-width="1"/>
+  <!-- Eye -->
+  <circle cx="100" cy="70" r="5" fill="#222"/>
+  <circle cx="101" cy="69" r="1.5" fill="#fff"/>
+  <!-- Nose tip -->
+  <ellipse cx="118" cy="80" rx="4" ry="3" fill="#E8B896"/>
+</svg>
