@@ -8,6 +8,13 @@ from typing import Sequence
 from .entities import VisemeCue
 from .value_objects import Affine, CameraState, Viseme
 
+# Segment lengths — MUST match PillowCutoutRenderer constants
+THIGH_LEN = 50.0
+SHIN_LEN = 48.0
+UPPER_ARM_LEN = 40.0
+FOREARM_LEN = 38.0
+HIP_HEIGHT = THIGH_LEN + SHIN_LEN  # 98
+
 
 def head_bob(t: float, amplitude: float = 4.0, freq: float = 2.5) -> float:
     return amplitude * math.sin(2 * math.pi * freq * t)
@@ -25,41 +32,29 @@ def _ease_smooth(u: float) -> float:
 def _two_bone_ik(
     hip: tuple[float, float],
     foot: tuple[float, float],
-    thigh_len: float,
-    shin_len: float,
+    thigh_len: float = THIGH_LEN,
+    shin_len: float = SHIN_LEN,
 ) -> tuple[float, float, tuple[float, float]]:
     """
-    2-bone IK for profile view (y+ down, x+ forward when facing right).
-
     Returns (thigh_world_deg, shin_world_deg, knee_pos).
-    Both angles are ABSOLUTE from downward axis (0 = straight down,
-    positive = toward +x). Shin angle points knee → foot.
-    Knee is placed on the -x side of the hip→foot line ("behind").
+    Both angles absolute: 0 = down, + toward +x.
+    Knee is rigidly at hip + dir(thigh)*thigh_len.
     """
     dx = foot[0] - hip[0]
     dy = foot[1] - hip[1]
     dist = math.hypot(dx, dy)
-    max_reach = thigh_len + shin_len - 1.0
-    min_reach = abs(thigh_len - shin_len) + 1.0
-    dist = _clamp(dist, min_reach, max_reach)
+    dist = _clamp(dist, abs(thigh_len - shin_len) + 1.0, thigh_len + shin_len - 1.0)
 
-    # Direction hip → foot from downward axis
     target = math.degrees(math.atan2(dx, dy))
-
     cos_a = (thigh_len**2 + dist**2 - shin_len**2) / (2 * thigh_len * dist)
     a = math.degrees(math.acos(_clamp(cos_a, -1.0, 1.0)))
 
-    # Put knee BEHIND the leg (toward -x relative to target direction)
-    # target - a swings thigh so knee is posterior for typical upright pose
+    # Knee behind (posterior) relative to hip→foot
     thigh_ang = target - a
 
     rad = math.radians(thigh_ang)
-    knee = (
-        hip[0] + math.sin(rad) * thigh_len,
-        hip[1] + math.cos(rad) * thigh_len,
-    )
+    knee = (hip[0] + math.sin(rad) * thigh_len, hip[1] + math.cos(rad) * thigh_len)
 
-    # Absolute shin angle: knee → foot
     sdx = foot[0] - knee[0]
     sdy = foot[1] - knee[1]
     shin_ang = math.degrees(math.atan2(sdx, sdy))
@@ -72,21 +67,12 @@ def grounded_walk(
     *,
     step_length: float = 55.0,
     cycle: float = 0.6,
-    thigh_len: float = 50.0,
-    shin_len: float = 48.0,
-    hip_height: float | None = None,
+    thigh_len: float = THIGH_LEN,
+    shin_len: float = SHIN_LEN,
+    hip_height: float = HIP_HEIGHT,
     bob_amp: float = 4.0,
     facing: float = 1.0,
 ) -> dict:
-    """
-    Grounded walk – stance foot world-locked, swing foot arcs forward.
-
-    Bone angles are ABSOLUTE world angles (see _two_bone_ik).
-    scroll_speed = step_length / (cycle/2) so bg can match body velocity.
-    """
-    if hip_height is None:
-        hip_height = thigh_len + shin_len  # ~98: straight-leg hip above ground
-
     step_period = cycle / 2.0
     scroll_speed = step_length / step_period
     body_world_x = scroll_speed * t
@@ -95,21 +81,14 @@ def grounded_walk(
     step_i = int(math.floor(total_steps))
     u = total_steps - step_i
 
-    if step_i % 2 == 0:
-        # Left stance, right swings
-        stance_plant = step_i * step_length
-        swing_from = (step_i - 1) * step_length
-        swing_to = (step_i + 1) * step_length
-        stance_is_left = True
-    else:
-        stance_plant = step_i * step_length
-        swing_from = (step_i - 1) * step_length
-        swing_to = (step_i + 1) * step_length
-        stance_is_left = False
+    stance_plant = step_i * step_length
+    swing_from = (step_i - 1) * step_length
+    swing_to = (step_i + 1) * step_length
+    stance_is_left = step_i % 2 == 0
 
     su = _ease_smooth(u)
     swing_wx = swing_from + (swing_to - swing_from) * su
-    swing_lift = 16.0 * math.sin(math.pi * u)  # lift above ground (y- up in local)
+    swing_lift = 16.0 * math.sin(math.pi * u)
 
     if stance_is_left:
         left_wx, left_wy = stance_plant, 0.0
@@ -120,30 +99,24 @@ def grounded_walk(
 
     bob = bob_amp * abs(math.sin(math.pi * total_steps))
 
-    # Body-local coords: origin under body on ground, y+ down
     def to_local(wx: float, wy: float) -> tuple[float, float]:
         return ((wx - body_world_x) * facing, wy)
 
     left_foot = to_local(left_wx, left_wy)
     right_foot = to_local(right_wx, right_wy)
-
-    # Hip fixed under body center (screen-centered character)
     hip = (0.0, -(hip_height - bob))
 
     l_th, l_sh, _ = _two_bone_ik(hip, left_foot, thigh_len, shin_len)
     r_th, r_sh, _ = _two_bone_ik(hip, right_foot, thigh_len, shin_len)
 
-    # Arms opposite to legs (absolute angles from down)
     l_ua = -0.55 * l_th
     r_ua = -0.55 * r_th
-    # Elbow: slight bend, absolute ≈ upper + relative bend
     l_fa = l_ua - 35.0
     r_fa = r_ua - 35.0
 
-    bones: dict[str, Affine] = {
+    bones = {
         "body": Affine.translate(0.0, bob),
         "head": Affine.rotate(2.0 * math.sin(2 * math.pi * t / cycle)),
-        # ABSOLUTE angles for thigh AND shin
         "left_thigh": Affine.rotate(l_th),
         "left_shin": Affine.rotate(l_sh),
         "right_thigh": Affine.rotate(r_th),

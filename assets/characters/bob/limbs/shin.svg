@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="50" viewBox="0 0 24 50">
-  <!-- pivot at top center -->
-  <rect x="5" y="1" width="14" height="42" rx="6" fill="#2C5F8A" stroke="#1a3a55" stroke-width="1.5"/>
-  <!-- foot -->
-  <ellipse cx="14" cy="45" rx="12" ry="5" fill="#1a1a1a"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="28" height="55" viewBox="0 0 28 55">
+  <!-- pivot (14,0); kinematic length 48 matches renderer SHIN -->
+  <rect x="7" y="0" width="14" height="42" rx="6" fill="#2C5F8A" stroke="#1a3a55" stroke-width="1.5"/>
+  <ellipse cx="16" cy="48" rx="12" ry="5" fill="#1a1a1a"/>
 </svg>
