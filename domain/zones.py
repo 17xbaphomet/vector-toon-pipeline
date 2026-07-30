@@ -1,7 +1,13 @@
-"""German landscape zones and generic transition system."""
+"""German landscapes: continuous base + walk-into overlays (no fade).
+
+Cities, villages and forest patches OVERLAY the base countryside so the
+character can walk in and out. Placement is generic and randomized with
+large gaps. Ortsschild props are world-fixed on the ground plane.
+"""
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -18,120 +24,71 @@ class ZoneId(str, Enum):
     STADT = "stadt"
 
 
-INNERORTS: frozenset[ZoneId] = frozenset({ZoneId.DORF, ZoneId.STADT})
+# Features that sit ON TOP of the continuous base landscape
+OVERLAY_TYPES: frozenset[ZoneId] = frozenset({ZoneId.DORF, ZoneId.STADT, ZoneId.WALD})
 
-
-@dataclass(frozen=True, slots=True)
-class ZoneDef:
-    id: ZoneId
-    label: str
-    sky: str = "sky.svg"
-    mid: str = "mid.svg"
-    ground: str = "ground.svg"
-
-
-ZONE_CATALOG: dict[ZoneId, ZoneDef] = {
-    ZoneId.FELDER: ZoneDef(ZoneId.FELDER, "Felder"),
-    ZoneId.LANDSTRASSE: ZoneDef(ZoneId.LANDSTRASSE, "Landstraße"),
-    ZoneId.WALD: ZoneDef(ZoneId.WALD, "Wald"),
-    ZoneId.DORF: ZoneDef(ZoneId.DORF, "Musterdorf"),
-    ZoneId.STADT: ZoneDef(ZoneId.STADT, "Neustadt"),
+# Default sign names (German places)
+SIGN_NAMES: dict[ZoneId, list[str]] = {
+    ZoneId.DORF: ["Musterdorf", "Kleinhausen", "Bergheim", "Lindenau", "Schönbach"],
+    ZoneId.STADT: ["Neustadt", "Altenburg", "Rheinfeld", "Hochstadt", "Mühlheim"],
+    ZoneId.WALD: ["Stadtwald", "Eichenforst", "Tannengrund", "Birkenhain"],
 }
 
 
 @dataclass(frozen=True, slots=True)
-class ZoneSegment:
-    zone: ZoneId
-    start: float
-    end: float
-    sign_text: str | None = None
+class Overlay:
+    """A landscape feature planted at a fixed world-x range."""
 
-
-@dataclass(frozen=True, slots=True)
-class TransitionEvent:
-    at_distance: float
-    from_zone: ZoneId
-    to_zone: ZoneId
-    show_sign: bool
+    kind: ZoneId
+    start: float          # world distance where overlay begins
+    width: float          # length of the overlay in world units
     sign_text: str
-    fade_s: float = 1.2
+
+    @property
+    def end(self) -> float:
+        return self.start + self.width
+
+    @property
+    def sign_world_x(self) -> float:
+        """Ortsschild sits just before the entrance."""
+        return self.start - 30.0
 
 
 @dataclass
-class ZoneSequence:
-    segments: Sequence[ZoneSegment]
+class LandscapeRoute:
+    """
+    Continuous base countryside + randomly placed overlays.
+
+    No ordered sequence, no crossfade — overlays appear when the walker
+    reaches their world-x and disappear when leaving.
+    """
+
+    overlays: Sequence[Overlay]
     assets_root: Path = field(default_factory=lambda: Path("assets/backgrounds/zones"))
+    seed: int | None = None
 
-    def zone_at(self, distance: float) -> ZoneSegment:
-        if not self.segments:
-            raise ValueError("ZoneSequence has no segments")
-        for seg in self.segments:
-            if seg.start <= distance < seg.end:
-                return seg
-        return self.segments[-1]
+    # ── base layers (always on) ──────────────────────────────────────
 
-    def active_blend(
-        self, distance: float, scroll_speed: float, fade_s: float = 1.2
-    ) -> tuple[ZoneSegment, ZoneSegment | None, float]:
-        cur = self.zone_at(distance)
-        fade_dist = max(fade_s * scroll_speed, 1.0)
-        nxt: ZoneSegment | None = None
-        for seg in self.segments:
-            if seg.start >= cur.end - 1e-6 and seg is not cur:
-                nxt = seg
-                break
-        if nxt is None:
-            return cur, None, 0.0
-        remaining = cur.end - distance
-        if remaining > fade_dist:
-            return cur, nxt, 0.0
-        blend = 1.0 - (remaining / fade_dist)
-        return cur, nxt, max(0.0, min(1.0, blend))
-
-    def transitions(self) -> list[TransitionEvent]:
-        events: list[TransitionEvent] = []
-        for a, b in zip(self.segments[:-1], self.segments[1:]):
-            entering_inner = b.zone in INNERORTS and a.zone not in INNERORTS
-            leaving_inner = a.zone in INNERORTS and b.zone not in INNERORTS
-            if entering_inner:
-                text = b.sign_text or ZONE_CATALOG[b.zone].label
-            elif leaving_inner:
-                text = a.sign_text or ZONE_CATALOG[a.zone].label
-            else:
-                text = b.sign_text or ZONE_CATALOG[b.zone].label
-            events.append(
-                TransitionEvent(
-                    at_distance=b.start,
-                    from_zone=a.zone,
-                    to_zone=b.zone,
-                    show_sign=True,
-                    sign_text=text,
-                )
-            )
-        return events
-
-    def layers_for(
-        self, zone: ZoneId, scroll_speed: float, facing: float = 1.0
-    ) -> tuple[BackgroundLayer, ...]:
-        zdef = ZONE_CATALOG[zone]
-        base = self.assets_root / zone.value
+    def base_layers(self, scroll_speed: float, facing: float = 1.0) -> tuple[BackgroundLayer, ...]:
+        root = self.assets_root
         return (
             BackgroundLayer(
-                path=base / zdef.sky,
+                path=root / "felder" / "sky.svg",
                 z_index=0,
-                parallax=0.12,
-                scroll_x=-facing * scroll_speed * 0.12,
+                parallax=0.10,
+                scroll_x=-facing * scroll_speed * 0.10,
                 repeat_x=True,
             ),
             BackgroundLayer(
-                path=base / zdef.mid,
+                path=root / "felder" / "mid.svg",
                 z_index=1,
-                parallax=0.45,
-                scroll_x=-facing * scroll_speed * 0.45,
+                parallax=0.35,
+                scroll_x=-facing * scroll_speed * 0.35,
                 repeat_x=True,
             ),
+            # Country road as continuous ground
             BackgroundLayer(
-                path=base / zdef.ground,
+                path=root / "landstrasse" / "ground.svg",
                 z_index=2,
                 parallax=1.0,
                 scroll_x=-facing * scroll_speed * 1.0,
@@ -139,16 +96,82 @@ class ZoneSequence:
             ),
         )
 
+    def overlay_layers(
+        self, kind: ZoneId, scroll_speed: float, facing: float = 1.0
+    ) -> tuple[BackgroundLayer, ...]:
+        """Mid (+ optional ground accent) for an overlay type — non-tiling placement handled by caller."""
+        root = self.assets_root / kind.value
+        layers = [
+            BackgroundLayer(
+                path=root / "mid.svg",
+                z_index=5,
+                parallax=1.0,  # locked to ground so it doesn't float
+                scroll_x=0.0,  # position set explicitly via world offset
+                repeat_x=False,
+            ),
+        ]
+        # Wald also darkens the ground strip a bit
+        if kind == ZoneId.WALD:
+            layers.append(
+                BackgroundLayer(
+                    path=root / "ground.svg",
+                    z_index=4,
+                    parallax=1.0,
+                    scroll_x=0.0,
+                    repeat_x=False,
+                )
+            )
+        return tuple(layers)
 
-def default_german_tour() -> ZoneSequence:
-    """Felder → Landstraße → Musterdorf → Stadtwald → Neustadt → Felder."""
-    return ZoneSequence(
-        segments=(
-            ZoneSegment(ZoneId.FELDER, 0, 400),
-            ZoneSegment(ZoneId.LANDSTRASSE, 400, 900, sign_text="Landstraße"),
-            ZoneSegment(ZoneId.DORF, 900, 1600, sign_text="Musterdorf"),
-            ZoneSegment(ZoneId.WALD, 1600, 2300, sign_text="Stadtwald"),
-            ZoneSegment(ZoneId.STADT, 2300, 3200, sign_text="Neustadt"),
-            ZoneSegment(ZoneId.FELDER, 3200, 99999, sign_text="Felder"),
-        )
-    )
+    def active_overlays(self, distance: float, margin: float = 900.0) -> list[Overlay]:
+        """Overlays whose world range is near the camera (visible or about to be)."""
+        return [
+            o
+            for o in self.overlays
+            if (o.start - margin) <= distance <= (o.end + margin)
+        ]
+
+    def near_sign(self, distance: float, window: float = 200.0) -> Overlay | None:
+        """Return overlay whose sign is within window of current distance."""
+        best: Overlay | None = None
+        best_d = window
+        for o in self.overlays:
+            d = abs(distance - o.sign_world_x)
+            if d < best_d:
+                best_d = d
+                best = o
+        return best
+
+
+def generate_route(
+    length: float = 20000.0,
+    seed: int | None = None,
+    min_gap: float = 1200.0,
+    max_gap: float = 2800.0,
+    min_width: float = 700.0,
+    max_width: float = 1400.0,
+) -> LandscapeRoute:
+    """
+    Place overlays randomly along the road with large gaps.
+
+    No fixed order — each pick is independent from {dorf, stadt, wald}.
+    """
+    rng = random.Random(seed)
+    overlays: list[Overlay] = []
+    x = rng.uniform(600, 1000)  # first feature not right at start
+
+    kinds = [ZoneId.DORF, ZoneId.STADT, ZoneId.WALD]
+    while x < length:
+        kind = rng.choice(kinds)
+        width = rng.uniform(min_width, max_width)
+        names = SIGN_NAMES.get(kind, [kind.value.title()])
+        text = rng.choice(names)
+        overlays.append(Overlay(kind=kind, start=x, width=width, sign_text=text))
+        x += width + rng.uniform(min_gap, max_gap)
+
+    return LandscapeRoute(overlays=tuple(overlays), seed=seed)
+
+
+# Back-compat alias used by older imports
+def default_german_tour(seed: int | None = 42) -> LandscapeRoute:
+    return generate_route(length=25000.0, seed=seed)
