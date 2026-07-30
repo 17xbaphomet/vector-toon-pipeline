@@ -1,4 +1,4 @@
-"""Continuous base landscape + place overlays + random individual features."""
+"""Continuous base landscape + place overlays + depth-layered features."""
 
 from __future__ import annotations
 
@@ -20,8 +20,6 @@ class ZoneId(str, Enum):
 
 
 class FeatureKind(str, Enum):
-    """Sparse individual landscape props."""
-
     ACKER = "acker"
     TIERE = "tiere"
     FELSEN = "felsen"
@@ -36,6 +34,37 @@ class FeatureKind(str, Enum):
     HEUBALLEN = "heuballen"
 
 
+class Depth(int, Enum):
+    """Parallax depth plane (0=near road, 2=horizon)."""
+
+    NEAR = 0
+    MID = 1
+    FAR = 2
+
+
+# parallax factor, scale, vertical lift (px toward horizon)
+DEPTH_PARAMS: dict[Depth, tuple[float, float, float]] = {
+    Depth.NEAR: (1.00, 1.00, 0.0),
+    Depth.MID: (0.55, 0.70, -35.0),
+    Depth.FAR: (0.28, 0.45, -70.0),
+}
+
+# Preferred depths per feature kind (weights for random pick)
+FEATURE_DEPTH_WEIGHTS: dict[FeatureKind, dict[Depth, float]] = {
+    FeatureKind.WRACK: {Depth.NEAR: 1.0},
+    FeatureKind.TIERE: {Depth.NEAR: 0.7, Depth.MID: 0.3},
+    FeatureKind.HEUBALLEN: {Depth.NEAR: 0.6, Depth.MID: 0.4},
+    FeatureKind.SUMPF: {Depth.NEAR: 0.5, Depth.MID: 0.5},
+    FeatureKind.FELSEN: {Depth.NEAR: 0.3, Depth.MID: 0.5, Depth.FAR: 0.2},
+    FeatureKind.ACKER: {Depth.MID: 0.6, Depth.FAR: 0.4},
+    FeatureKind.BAUERNHOF: {Depth.MID: 0.7, Depth.FAR: 0.3},
+    FeatureKind.KAPELLE: {Depth.MID: 0.6, Depth.FAR: 0.4},
+    FeatureKind.RUINE: {Depth.MID: 0.5, Depth.FAR: 0.5},
+    FeatureKind.INDUSTRIE: {Depth.MID: 0.3, Depth.FAR: 0.7},
+    FeatureKind.WINDRAD: {Depth.MID: 0.2, Depth.FAR: 0.8},
+    FeatureKind.HOCHSPANNUNG: {Depth.MID: 0.3, Depth.FAR: 0.7},
+}
+
 OVERLAY_TYPES: frozenset[ZoneId] = frozenset({ZoneId.DORF, ZoneId.STADT, ZoneId.WALD})
 
 SIGN_NAMES: dict[ZoneId, list[str]] = {
@@ -44,7 +73,6 @@ SIGN_NAMES: dict[ZoneId, list[str]] = {
     ZoneId.WALD: ["Stadtwald", "Eichenforst", "Tannengrund", "Birkenhain"],
 }
 
-# Relative spawn weights (higher = more common)
 FEATURE_WEIGHTS: dict[FeatureKind, float] = {
     FeatureKind.ACKER: 1.4,
     FeatureKind.TIERE: 1.2,
@@ -94,15 +122,26 @@ class Overlay:
 
 @dataclass(frozen=True, slots=True)
 class Feature:
-    """A single sparse landscape prop planted at world-x."""
-
     kind: FeatureKind
     start: float
     width: float
+    depth: Depth = Depth.NEAR
 
     @property
     def end(self) -> float:
         return self.start + self.width
+
+    @property
+    def parallax(self) -> float:
+        return DEPTH_PARAMS[self.depth][0]
+
+    @property
+    def scale(self) -> float:
+        return DEPTH_PARAMS[self.depth][1]
+
+    @property
+    def y_offset(self) -> float:
+        return DEPTH_PARAMS[self.depth][2]
 
 
 @dataclass
@@ -146,17 +185,28 @@ class LandscapeRoute:
         ]
 
     def active_features(self, distance: float, margin: float = 1200.0) -> list[Feature]:
-        return [
-            f
-            for f in self.features
-            if (f.start - margin) <= distance <= (f.end + margin)
-        ]
+        # Wider margin for far (slower) features so they enter view earlier
+        out: list[Feature] = []
+        for f in self.features:
+            m = margin / max(f.parallax, 0.15)
+            if (f.start - m) <= distance <= (f.end + m):
+                out.append(f)
+        # Draw far first, then mid, then near (painter's algorithm)
+        out.sort(key=lambda f: f.depth.value)
+        return out
 
 
 def _pick_feature(rng: random.Random) -> FeatureKind:
     kinds = list(FEATURE_WEIGHTS.keys())
     weights = [FEATURE_WEIGHTS[k] for k in kinds]
     return rng.choices(kinds, weights=weights, k=1)[0]
+
+
+def _pick_depth(rng: random.Random, kind: FeatureKind) -> Depth:
+    weights = FEATURE_DEPTH_WEIGHTS.get(kind, {Depth.NEAR: 1.0})
+    depths = list(weights.keys())
+    w = [weights[d] for d in depths]
+    return rng.choices(depths, weights=w, k=1)[0]
 
 
 def generate_route(
@@ -169,10 +219,8 @@ def generate_route(
     feature_min_gap: float = 600.0,
     feature_max_gap: float = 2200.0,
 ) -> LandscapeRoute:
-    """Large place overlays + denser random individual features."""
     rng = random.Random(seed)
 
-    # ── large places ─────────────────────────────────────────────────
     overlays: list[Overlay] = []
     x = rng.uniform(5000, 9000)
     place_kinds = [ZoneId.DORF, ZoneId.STADT, ZoneId.WALD]
@@ -184,7 +232,6 @@ def generate_route(
         overlays.append(Overlay(kind=kind, start=x, width=width, sign_text=text))
         x += width + rng.uniform(min_gap, max_gap)
 
-    # ── sparse individual features (avoid heavy overlap with places) ─
     place_ranges = [(o.start - 200, o.end + 200) for o in overlays]
 
     def _inside_place(wx: float) -> bool:
@@ -195,10 +242,13 @@ def generate_route(
     while fx < length:
         if not _inside_place(fx):
             kind = _pick_feature(rng)
+            depth = _pick_depth(rng, kind)
             lo, hi = FEATURE_WIDTH[kind]
-            fw = rng.uniform(lo, hi)
-            features.append(Feature(kind=kind, start=fx, width=fw))
-            fx += fw + rng.uniform(feature_min_gap, feature_max_gap)
+            # Far features appear wider in world space (same visual after scale)
+            scale = DEPTH_PARAMS[depth][1]
+            fw = rng.uniform(lo, hi) / scale
+            features.append(Feature(kind=kind, start=fx, width=fw, depth=depth))
+            fx += fw * scale + rng.uniform(feature_min_gap, feature_max_gap)
         else:
             fx += rng.uniform(300, 800)
 
@@ -209,5 +259,5 @@ def generate_route(
     )
 
 
-def default_german_tour(seed: int | None = 42) -> LandscapeRoute:
+def default_german_route(seed: int | None = 42) -> LandscapeRoute:
     return generate_route(length=80000.0, seed=seed)
