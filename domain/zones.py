@@ -1,4 +1,4 @@
-"""Organic infinite landscape: tagged features + soft region bias, generated forever."""
+"""Organic infinite landscape: tagged features + combinable props, forever."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from enum import Enum, Flag, auto
 from pathlib import Path
 from typing import Sequence
 
+from .feature_props import FeatureProps, sample_props
 from .value_objects import BackgroundLayer
 
 
@@ -82,23 +83,12 @@ FEATURE_TAGS: dict[FeatureKind, Tag] = {
 }
 
 BASE_WEIGHTS: dict[FeatureKind, float] = {
-    FeatureKind.ACKER: 1.3,
-    FeatureKind.TIERE: 0.9,
-    FeatureKind.FELSEN: 0.7,
-    FeatureKind.INDUSTRIE: 0.15,
-    FeatureKind.RUINE: 0.25,
-    FeatureKind.WRACK: 0.2,
-    FeatureKind.BAUERNHOF: 0.5,
-    FeatureKind.SUMPF: 0.3,
-    FeatureKind.WINDRAD: 0.35,
-    FeatureKind.HOCHSPANNUNG: 0.3,
-    FeatureKind.KAPELLE: 0.25,
-    FeatureKind.HEUBALLEN: 1.0,
-    FeatureKind.HAUS: 0.2,
-    FeatureKind.BAUM: 0.8,
-    FeatureKind.LATERNE: 0.1,
-    FeatureKind.LAGERHALLE: 0.1,
-    FeatureKind.BUSCH: 0.9,
+    FeatureKind.ACKER: 1.3, FeatureKind.TIERE: 0.9, FeatureKind.FELSEN: 0.7,
+    FeatureKind.INDUSTRIE: 0.15, FeatureKind.RUINE: 0.25, FeatureKind.WRACK: 0.2,
+    FeatureKind.BAUERNHOF: 0.5, FeatureKind.SUMPF: 0.3, FeatureKind.WINDRAD: 0.35,
+    FeatureKind.HOCHSPANNUNG: 0.3, FeatureKind.KAPELLE: 0.25, FeatureKind.HEUBALLEN: 1.0,
+    FeatureKind.HAUS: 0.2, FeatureKind.BAUM: 0.8, FeatureKind.LATERNE: 0.1,
+    FeatureKind.LAGERHALLE: 0.1, FeatureKind.BUSCH: 0.9,
 }
 
 MOOD_TAG_BOOST: dict[RegionMood, tuple[Tag, float]] = {
@@ -110,33 +100,20 @@ MOOD_TAG_BOOST: dict[RegionMood, tuple[Tag, float]] = {
 
 MOOD_KIND_BOOST: dict[RegionMood, dict[FeatureKind, float]] = {
     RegionMood.DORF: {
-        FeatureKind.BAUERNHOF: 2.5,
-        FeatureKind.HAUS: 3.0,
-        FeatureKind.TIERE: 2.0,
-        FeatureKind.KAPELLE: 2.5,
-        FeatureKind.HEUBALLEN: 1.8,
-        FeatureKind.ACKER: 1.5,
+        FeatureKind.BAUERNHOF: 2.5, FeatureKind.HAUS: 3.0, FeatureKind.TIERE: 2.0,
+        FeatureKind.KAPELLE: 2.5, FeatureKind.HEUBALLEN: 1.8, FeatureKind.ACKER: 1.5,
         FeatureKind.LATERNE: 1.5,
     },
     RegionMood.STADT: {
-        FeatureKind.HAUS: 4.0,
-        FeatureKind.INDUSTRIE: 3.5,
-        FeatureKind.LAGERHALLE: 3.0,
-        FeatureKind.LATERNE: 3.5,
-        FeatureKind.HOCHSPANNUNG: 2.0,
-        FeatureKind.WRACK: 1.5,
+        FeatureKind.HAUS: 4.0, FeatureKind.INDUSTRIE: 3.5, FeatureKind.LAGERHALLE: 3.0,
+        FeatureKind.LATERNE: 3.5, FeatureKind.HOCHSPANNUNG: 2.0, FeatureKind.WRACK: 1.5,
     },
     RegionMood.WALD: {
-        FeatureKind.BAUM: 4.5,
-        FeatureKind.BUSCH: 3.0,
-        FeatureKind.FELSEN: 2.5,
-        FeatureKind.SUMPF: 2.0,
-        FeatureKind.RUINE: 1.5,
+        FeatureKind.BAUM: 4.5, FeatureKind.BUSCH: 3.0, FeatureKind.FELSEN: 2.5,
+        FeatureKind.SUMPF: 2.0, FeatureKind.RUINE: 1.5,
     },
     RegionMood.OFFENLAND: {
-        FeatureKind.ACKER: 2.0,
-        FeatureKind.HEUBALLEN: 1.5,
-        FeatureKind.WINDRAD: 1.4,
+        FeatureKind.ACKER: 2.0, FeatureKind.HEUBALLEN: 1.5, FeatureKind.WINDRAD: 1.4,
         FeatureKind.TIERE: 1.3,
     },
 }
@@ -162,22 +139,14 @@ FEATURE_DEPTH_WEIGHTS: dict[FeatureKind, dict[Depth, float]] = {
 }
 
 FEATURE_WIDTH: dict[FeatureKind, tuple[float, float]] = {
-    FeatureKind.ACKER: (500, 900),
-    FeatureKind.TIERE: (280, 450),
-    FeatureKind.FELSEN: (200, 350),
-    FeatureKind.INDUSTRIE: (400, 700),
-    FeatureKind.RUINE: (280, 480),
-    FeatureKind.WRACK: (180, 300),
-    FeatureKind.BAUERNHOF: (400, 650),
-    FeatureKind.SUMPF: (450, 750),
-    FeatureKind.WINDRAD: (200, 320),
-    FeatureKind.HOCHSPANNUNG: (600, 1000),
-    FeatureKind.KAPELLE: (220, 360),
-    FeatureKind.HEUBALLEN: (220, 380),
-    FeatureKind.HAUS: (180, 320),
-    FeatureKind.BAUM: (120, 220),
-    FeatureKind.LATERNE: (60, 100),
-    FeatureKind.LAGERHALLE: (350, 550),
+    FeatureKind.ACKER: (500, 900), FeatureKind.TIERE: (280, 450),
+    FeatureKind.FELSEN: (200, 350), FeatureKind.INDUSTRIE: (400, 700),
+    FeatureKind.RUINE: (280, 480), FeatureKind.WRACK: (180, 300),
+    FeatureKind.BAUERNHOF: (400, 650), FeatureKind.SUMPF: (450, 750),
+    FeatureKind.WINDRAD: (200, 320), FeatureKind.HOCHSPANNUNG: (600, 1000),
+    FeatureKind.KAPELLE: (220, 360), FeatureKind.HEUBALLEN: (220, 380),
+    FeatureKind.HAUS: (180, 320), FeatureKind.BAUM: (120, 220),
+    FeatureKind.LATERNE: (60, 100), FeatureKind.LAGERHALLE: (350, 550),
     FeatureKind.BUSCH: (100, 180),
 }
 
@@ -206,6 +175,7 @@ class Feature:
     width: float
     depth: Depth = Depth.NEAR
     tags: Tag = Tag.NATURE
+    props: FeatureProps = field(default_factory=FeatureProps)
 
     @property
     def end(self) -> float:
@@ -217,11 +187,11 @@ class Feature:
 
     @property
     def scale(self) -> float:
-        return DEPTH_PARAMS[self.depth][1]
+        return DEPTH_PARAMS[self.depth][1] * self.props.scale_mul
 
     @property
     def y_offset(self) -> float:
-        return DEPTH_PARAMS[self.depth][2]
+        return DEPTH_PARAMS[self.depth][2] + self.props.y_jitter
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,8 +246,7 @@ def _pick_depth(rng: random.Random, kind: FeatureKind) -> Depth:
 def _pick_mood(rng: random.Random) -> RegionMood:
     return rng.choices(
         [RegionMood.OFFENLAND, RegionMood.DORF, RegionMood.STADT, RegionMood.WALD],
-        weights=[3.0, 1.4, 0.9, 1.2],
-        k=1,
+        weights=[3.0, 1.4, 0.9, 1.2], k=1,
     )[0]
 
 
@@ -300,15 +269,11 @@ def _make_region(rng: random.Random, x: float) -> Region:
 
 @dataclass
 class LandscapeRoute:
-    """Infinite organic route — extends itself as the walker advances."""
-
     features: list[Feature] = field(default_factory=list)
     regions: list[Region] = field(default_factory=list)
     assets_root: Path = field(default_factory=lambda: Path("assets/backgrounds/zones"))
     features_root: Path = field(default_factory=lambda: Path("assets/backgrounds/features"))
     seed: int | None = None
-
-    # generation cursors
     _region_end: float = 0.0
     _feature_x: float = 200.0
     _rng: random.Random = field(default_factory=random.Random)
@@ -321,18 +286,12 @@ class LandscapeRoute:
         root = self.assets_root
         return (
             BackgroundLayer(
-                path=root / "felder" / "mid.svg",
-                z_index=1,
-                parallax=0.35,
-                scroll_x=-facing * scroll_speed * 0.35,
-                repeat_x=True,
+                path=root / "felder" / "mid.svg", z_index=1, parallax=0.35,
+                scroll_x=-facing * scroll_speed * 0.35, repeat_x=True,
             ),
             BackgroundLayer(
-                path=root / "landstrasse" / "ground.svg",
-                z_index=2,
-                parallax=1.0,
-                scroll_x=-facing * scroll_speed * 1.0,
-                repeat_x=True,
+                path=root / "landstrasse" / "ground.svg", z_index=2, parallax=1.0,
+                scroll_x=-facing * scroll_speed * 1.0, repeat_x=True,
             ),
         )
 
@@ -357,23 +316,20 @@ class LandscapeRoute:
             weights = _weights_for_mood(mood)
             kind = _pick_kind(self._rng, weights)
             depth = _pick_depth(self._rng, kind)
+            props = sample_props(self._rng, kind.value)
             lo, hi = FEATURE_WIDTH[kind]
-            scale = DEPTH_PARAMS[depth][1]
-            fw = self._rng.uniform(lo, hi) / scale
+            depth_scale = DEPTH_PARAMS[depth][1]
+            fw = self._rng.uniform(lo, hi) / depth_scale * props.scale_mul
             self.features.append(
                 Feature(
-                    kind=kind,
-                    start=self._feature_x,
-                    width=fw,
-                    depth=depth,
-                    tags=FEATURE_TAGS[kind],
+                    kind=kind, start=self._feature_x, width=fw,
+                    depth=depth, tags=FEATURE_TAGS[kind], props=props,
                 )
             )
             gap_lo, gap_hi = MOOD_GAP[mood]
-            self._feature_x += fw * scale + self._rng.uniform(gap_lo, gap_hi)
+            self._feature_x += fw * depth_scale + self._rng.uniform(gap_lo, gap_hi)
 
     def ensure_ahead(self, distance: float, look_ahead: float = 12000.0) -> None:
-        """Generate content at least `look_ahead` past current distance."""
         target = distance + look_ahead
         if target <= self._generated_until:
             return
@@ -382,7 +338,6 @@ class LandscapeRoute:
         self._generated_until = target
 
     def prune_behind(self, distance: float, keep_behind: float = 8000.0) -> None:
-        """Drop features/regions far behind the walker to bound memory."""
         cutoff = distance - keep_behind
         if cutoff <= 0:
             return
@@ -402,8 +357,7 @@ class LandscapeRoute:
     def active_regions(self, distance: float, margin: float = 800.0) -> list[Region]:
         self.ensure_ahead(distance)
         return [
-            r
-            for r in self.regions
+            r for r in self.regions
             if r.mood != RegionMood.OFFENLAND
             and (r.start - margin) <= distance <= (r.end + margin)
         ]
@@ -413,11 +367,7 @@ class LandscapeRoute:
         return self.regions
 
 
-def generate_route(
-    length: float = 15000.0,
-    seed: int | None = None,
-) -> LandscapeRoute:
-    """Create infinite route pre-seeded with an initial segment."""
+def generate_route(length: float = 15000.0, seed: int | None = None) -> LandscapeRoute:
     route = LandscapeRoute(seed=seed)
     route.ensure_ahead(0.0, look_ahead=max(length, 15000.0))
     return route
