@@ -1,9 +1,4 @@
-"""Organic landscape: tagged individual features + soft region probability bias.
-
-No hard Dorf/Stadt/Wald object strips. Regions only shift spawn weights so
-clusters emerge naturally (more farm animals near a village mood, more
-industry near a city mood, more trees/rocks in forest mood).
-"""
+"""Organic infinite landscape: tagged features + soft region bias, generated forever."""
 
 from __future__ import annotations
 
@@ -17,8 +12,6 @@ from .value_objects import BackgroundLayer
 
 
 class Tag(Flag):
-    """Semantic tags for features — regions boost matching tags."""
-
     NATURE = auto()
     FARM = auto()
     RURAL = auto()
@@ -42,7 +35,6 @@ class FeatureKind(str, Enum):
     HOCHSPANNUNG = "hochspannung"
     KAPELLE = "kapelle"
     HEUBALLEN = "heuballen"
-    # denser organic building blocks
     HAUS = "haus"
     BAUM = "baum"
     LATERNE = "laterne"
@@ -57,9 +49,7 @@ class Depth(int, Enum):
 
 
 class RegionMood(str, Enum):
-    """Soft probability climate along the route."""
-
-    OFFENLAND = "offenland"  # fields, neutral countryside
+    OFFENLAND = "offenland"
     DORF = "dorf"
     STADT = "stadt"
     WALD = "wald"
@@ -71,7 +61,6 @@ DEPTH_PARAMS: dict[Depth, tuple[float, float, float]] = {
     Depth.FAR: (0.28, 0.45, -70.0),
 }
 
-# kind → tags
 FEATURE_TAGS: dict[FeatureKind, Tag] = {
     FeatureKind.ACKER: Tag.FARM | Tag.RURAL | Tag.NATURE,
     FeatureKind.TIERE: Tag.FARM | Tag.RURAL,
@@ -92,7 +81,6 @@ FEATURE_TAGS: dict[FeatureKind, Tag] = {
     FeatureKind.BUSCH: Tag.NATURE | Tag.FOREST | Tag.RURAL,
 }
 
-# base spawn weights (Offenland baseline)
 BASE_WEIGHTS: dict[FeatureKind, float] = {
     FeatureKind.ACKER: 1.3,
     FeatureKind.TIERE: 0.9,
@@ -113,7 +101,6 @@ BASE_WEIGHTS: dict[FeatureKind, float] = {
     FeatureKind.BUSCH: 0.9,
 }
 
-# per-mood multipliers applied to kinds whose tags intersect the mood's focus
 MOOD_TAG_BOOST: dict[RegionMood, tuple[Tag, float]] = {
     RegionMood.OFFENLAND: (Tag.FARM | Tag.NATURE | Tag.RURAL, 1.4),
     RegionMood.DORF: (Tag.FARM | Tag.RURAL | Tag.URBAN, 2.8),
@@ -121,7 +108,6 @@ MOOD_TAG_BOOST: dict[RegionMood, tuple[Tag, float]] = {
     RegionMood.WALD: (Tag.FOREST | Tag.NATURE, 3.0),
 }
 
-# extra kind-specific multipliers inside moods
 MOOD_KIND_BOOST: dict[RegionMood, dict[FeatureKind, float]] = {
     RegionMood.DORF: {
         FeatureKind.BAUERNHOF: 2.5,
@@ -196,13 +182,15 @@ FEATURE_WIDTH: dict[FeatureKind, tuple[float, float]] = {
 }
 
 SIGN_NAMES: dict[RegionMood, list[str]] = {
-    RegionMood.DORF: ["Musterdorf", "Kleinhausen", "Bergheim", "Lindenau", "Schönbach"],
-    RegionMood.STADT: ["Neustadt", "Altenburg", "Rheinfeld", "Hochstadt", "Mühlheim"],
-    RegionMood.WALD: ["Stadtwald", "Eichenforst", "Tannengrund", "Birkenhain"],
+    RegionMood.DORF: ["Musterdorf", "Kleinhausen", "Bergheim", "Lindenau", "Schönbach",
+                      "Falkenberg", "Rosenfeld", "Kirchdorf", "Amselfeld"],
+    RegionMood.STADT: ["Neustadt", "Altenburg", "Rheinfeld", "Hochstadt", "Mühlheim",
+                       "Westheim", "Ostburg", "Nordheim"],
+    RegionMood.WALD: ["Stadtwald", "Eichenforst", "Tannengrund", "Birkenhain",
+                      "Fichtenwald", "Buchenhain"],
     RegionMood.OFFENLAND: [],
 }
 
-# denser spawning inside settlement/forest moods
 MOOD_GAP: dict[RegionMood, tuple[float, float]] = {
     RegionMood.OFFENLAND: (700, 2200),
     RegionMood.DORF: (180, 520),
@@ -238,8 +226,6 @@ class Feature:
 
 @dataclass(frozen=True, slots=True)
 class Region:
-    """Soft mood segment — affects spawn weights only, no drawn strip."""
-
     mood: RegionMood
     start: float
     width: float
@@ -254,59 +240,6 @@ class Region:
         return self.start - 40.0
 
 
-@dataclass
-class LandscapeRoute:
-    features: Sequence[Feature]
-    regions: Sequence[Region] = ()
-    assets_root: Path = field(default_factory=lambda: Path("assets/backgrounds/zones"))
-    features_root: Path = field(default_factory=lambda: Path("assets/backgrounds/features"))
-    seed: int | None = None
-
-    def base_layers(self, scroll_speed: float, facing: float = 1.0) -> tuple[BackgroundLayer, ...]:
-        root = self.assets_root
-        return (
-            BackgroundLayer(
-                path=root / "felder" / "mid.svg",
-                z_index=1,
-                parallax=0.35,
-                scroll_x=-facing * scroll_speed * 0.35,
-                repeat_x=True,
-            ),
-            BackgroundLayer(
-                path=root / "landstrasse" / "ground.svg",
-                z_index=2,
-                parallax=1.0,
-                scroll_x=-facing * scroll_speed * 1.0,
-                repeat_x=True,
-            ),
-        )
-
-    def feature_object_path(self, kind: FeatureKind) -> Path:
-        return self.features_root / f"{kind.value}.svg"
-
-    def active_features(self, distance: float, margin: float = 1200.0) -> list[Feature]:
-        out: list[Feature] = []
-        for f in self.features:
-            m = margin / max(f.parallax, 0.15)
-            if (f.start - m) <= distance <= (f.end + m):
-                out.append(f)
-        out.sort(key=lambda f: (f.parallax, f.start))
-        return out
-
-    def active_regions(self, distance: float, margin: float = 800.0) -> list[Region]:
-        return [
-            r
-            for r in self.regions
-            if r.mood != RegionMood.OFFENLAND
-            and (r.start - margin) <= distance <= (r.end + margin)
-        ]
-
-    # backward-compat aliases used by older stream code
-    @property
-    def overlays(self) -> Sequence[Region]:
-        return self.regions
-
-
 def _weights_for_mood(mood: RegionMood) -> dict[FeatureKind, float]:
     boost_tags, tag_mul = MOOD_TAG_BOOST[mood]
     kind_boost = MOOD_KIND_BOOST.get(mood, {})
@@ -317,7 +250,6 @@ def _weights_for_mood(mood: RegionMood) -> dict[FeatureKind, float]:
         if tags & boost_tags:
             w *= tag_mul
         w *= kind_boost.get(kind, 1.0)
-        # suppress strongly mismatched kinds
         if mood == RegionMood.WALD and Tag.URBAN in tags and Tag.FOREST not in tags:
             w *= 0.15
         if mood == RegionMood.STADT and Tag.FOREST in tags and Tag.URBAN not in tags:
@@ -342,7 +274,6 @@ def _pick_depth(rng: random.Random, kind: FeatureKind) -> Depth:
 
 
 def _pick_mood(rng: random.Random) -> RegionMood:
-    # Offenland most common; settlements rarer
     return rng.choices(
         [RegionMood.OFFENLAND, RegionMood.DORF, RegionMood.STADT, RegionMood.WALD],
         weights=[3.0, 1.4, 0.9, 1.2],
@@ -350,68 +281,147 @@ def _pick_mood(rng: random.Random) -> RegionMood:
     )[0]
 
 
-def generate_route(
-    length: float = 80000.0,
-    seed: int | None = None,
-) -> LandscapeRoute:
-    """Soft mood regions + organic tagged feature placement."""
-    rng = random.Random(seed)
+def _make_region(rng: random.Random, x: float) -> Region:
+    mood = _pick_mood(rng)
+    if mood == RegionMood.OFFENLAND:
+        width = rng.uniform(4000, 9000)
+        sign = ""
+    elif mood == RegionMood.WALD:
+        width = rng.uniform(2500, 5500)
+        sign = rng.choice(SIGN_NAMES[mood])
+    elif mood == RegionMood.DORF:
+        width = rng.uniform(1800, 3500)
+        sign = rng.choice(SIGN_NAMES[mood])
+    else:
+        width = rng.uniform(2200, 4500)
+        sign = rng.choice(SIGN_NAMES[mood])
+    return Region(mood=mood, start=x, width=width, sign_text=sign)
 
-    # ── soft regions (probability climates only) ─────────────────────
-    regions: list[Region] = []
-    x = 0.0
-    while x < length:
-        mood = _pick_mood(rng)
-        if mood == RegionMood.OFFENLAND:
-            width = rng.uniform(4000, 9000)
-            sign = ""
-        elif mood == RegionMood.WALD:
-            width = rng.uniform(2500, 5500)
-            sign = rng.choice(SIGN_NAMES[mood])
-        elif mood == RegionMood.DORF:
-            width = rng.uniform(1800, 3500)
-            sign = rng.choice(SIGN_NAMES[mood])
-        else:  # STADT
-            width = rng.uniform(2200, 4500)
-            sign = rng.choice(SIGN_NAMES[mood])
-        regions.append(Region(mood=mood, start=x, width=width, sign_text=sign))
-        x += width
 
-    def mood_at(wx: float) -> RegionMood:
-        for r in regions:
+@dataclass
+class LandscapeRoute:
+    """Infinite organic route — extends itself as the walker advances."""
+
+    features: list[Feature] = field(default_factory=list)
+    regions: list[Region] = field(default_factory=list)
+    assets_root: Path = field(default_factory=lambda: Path("assets/backgrounds/zones"))
+    features_root: Path = field(default_factory=lambda: Path("assets/backgrounds/features"))
+    seed: int | None = None
+
+    # generation cursors
+    _region_end: float = 0.0
+    _feature_x: float = 200.0
+    _rng: random.Random = field(default_factory=random.Random)
+    _generated_until: float = 0.0
+
+    def __post_init__(self) -> None:
+        self._rng = random.Random(self.seed)
+
+    def base_layers(self, scroll_speed: float, facing: float = 1.0) -> tuple[BackgroundLayer, ...]:
+        root = self.assets_root
+        return (
+            BackgroundLayer(
+                path=root / "felder" / "mid.svg",
+                z_index=1,
+                parallax=0.35,
+                scroll_x=-facing * scroll_speed * 0.35,
+                repeat_x=True,
+            ),
+            BackgroundLayer(
+                path=root / "landstrasse" / "ground.svg",
+                z_index=2,
+                parallax=1.0,
+                scroll_x=-facing * scroll_speed * 1.0,
+                repeat_x=True,
+            ),
+        )
+
+    def feature_object_path(self, kind: FeatureKind) -> Path:
+        return self.features_root / f"{kind.value}.svg"
+
+    def _mood_at(self, wx: float) -> RegionMood:
+        for r in self.regions:
             if r.start <= wx < r.end:
                 return r.mood
         return RegionMood.OFFENLAND
 
-    # ── organic features ─────────────────────────────────────────────
-    features: list[Feature] = []
-    fx = rng.uniform(200, 600)
-    while fx < length:
-        mood = mood_at(fx)
-        weights = _weights_for_mood(mood)
-        kind = _pick_kind(rng, weights)
-        depth = _pick_depth(rng, kind)
-        lo, hi = FEATURE_WIDTH[kind]
-        scale = DEPTH_PARAMS[depth][1]
-        fw = rng.uniform(lo, hi) / scale
-        features.append(
-            Feature(
-                kind=kind,
-                start=fx,
-                width=fw,
-                depth=depth,
-                tags=FEATURE_TAGS[kind],
-            )
-        )
-        gap_lo, gap_hi = MOOD_GAP[mood]
-        fx += fw * scale + rng.uniform(gap_lo, gap_hi)
+    def _extend_regions(self, until: float) -> None:
+        while self._region_end < until:
+            reg = _make_region(self._rng, self._region_end)
+            self.regions.append(reg)
+            self._region_end = reg.end
 
-    return LandscapeRoute(
-        features=tuple(features),
-        regions=tuple(regions),
-        seed=seed,
-    )
+    def _extend_features(self, until: float) -> None:
+        while self._feature_x < until:
+            mood = self._mood_at(self._feature_x)
+            weights = _weights_for_mood(mood)
+            kind = _pick_kind(self._rng, weights)
+            depth = _pick_depth(self._rng, kind)
+            lo, hi = FEATURE_WIDTH[kind]
+            scale = DEPTH_PARAMS[depth][1]
+            fw = self._rng.uniform(lo, hi) / scale
+            self.features.append(
+                Feature(
+                    kind=kind,
+                    start=self._feature_x,
+                    width=fw,
+                    depth=depth,
+                    tags=FEATURE_TAGS[kind],
+                )
+            )
+            gap_lo, gap_hi = MOOD_GAP[mood]
+            self._feature_x += fw * scale + self._rng.uniform(gap_lo, gap_hi)
+
+    def ensure_ahead(self, distance: float, look_ahead: float = 12000.0) -> None:
+        """Generate content at least `look_ahead` past current distance."""
+        target = distance + look_ahead
+        if target <= self._generated_until:
+            return
+        self._extend_regions(target + 5000)
+        self._extend_features(target)
+        self._generated_until = target
+
+    def prune_behind(self, distance: float, keep_behind: float = 8000.0) -> None:
+        """Drop features/regions far behind the walker to bound memory."""
+        cutoff = distance - keep_behind
+        if cutoff <= 0:
+            return
+        self.features = [f for f in self.features if f.end >= cutoff]
+        self.regions = [r for r in self.regions if r.end >= cutoff]
+
+    def active_features(self, distance: float, margin: float = 1200.0) -> list[Feature]:
+        self.ensure_ahead(distance)
+        out: list[Feature] = []
+        for f in self.features:
+            m = margin / max(f.parallax, 0.15)
+            if (f.start - m) <= distance <= (f.end + m):
+                out.append(f)
+        out.sort(key=lambda f: (f.parallax, f.start))
+        return out
+
+    def active_regions(self, distance: float, margin: float = 800.0) -> list[Region]:
+        self.ensure_ahead(distance)
+        return [
+            r
+            for r in self.regions
+            if r.mood != RegionMood.OFFENLAND
+            and (r.start - margin) <= distance <= (r.end + margin)
+        ]
+
+    @property
+    def overlays(self) -> Sequence[Region]:
+        return self.regions
+
+
+def generate_route(
+    length: float = 15000.0,
+    seed: int | None = None,
+) -> LandscapeRoute:
+    """Create infinite route pre-seeded with an initial segment."""
+    route = LandscapeRoute(seed=seed)
+    route.ensure_ahead(0.0, look_ahead=max(length, 15000.0))
+    return route
 
 
 def default_german_route(seed: int | None = 42) -> LandscapeRoute:
-    return generate_route(length=80000.0, seed=seed)
+    return generate_route(length=15000.0, seed=seed)
