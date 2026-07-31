@@ -2,7 +2,7 @@
 
 Loop every frame:
   1. map heading
-  2. ideal_view = heading - 90
+  2. ideal_view = heading(cur + 3s) - 90   ← map orientation 3 s ahead
   3. front road bend = clamp(error); back road = same curve delayed 4 s
   4. sky rotates from curve delayed 3 s (speed ∝ bend)
 """
@@ -147,14 +147,25 @@ class ContinuousWalkStream:
         return (a + ContinuousWalkStream._angle_diff(a, b) * t) % 360.0
 
     def _update_heading(self, body_x):
-        """Step 1+2: map heading -> ideal sky view = heading - 90."""
+        """Step 1+2: ideal sky view from map heading 3 s ahead (not current).
+
+        Delays (sky 3 s, back-road 4 s) stay in _smooth_view unchanged.
+        """
         if self.geo is None:
             return
         cur_m = self._world_to_geo_m(body_x)
         lon, lat, heading_raw = self.geo.route.sample(cur_m)
         self._heading_s = self._angle_lerp(self._heading_s, heading_raw, 0.4)
         heading = self._heading_s
-        self._view_az_target = (heading - 90.0) % 360.0
+        # comparison value = orientation on the map in 3 seconds
+        total = max(1.0, float(self.geo.route.total_m))
+        look_m = float(self.cfg.walk_speed_mps or 1.4) * 3.0
+        ahead_m = (cur_m + look_m) % total
+        try:
+            _, _, heading_ahead = self.geo.route.sample(ahead_m)
+        except Exception:
+            heading_ahead = heading_raw
+        self._view_az_target = (heading_ahead - 90.0) % 360.0
         from domain.geo.context import GeoSample as GS
         prev = self._geo_sample
         self._geo_sample = GS(
