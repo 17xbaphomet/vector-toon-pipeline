@@ -159,12 +159,7 @@ class ContinuousWalkStream:
         )
 
     def _smooth_view(self, dt: float) -> None:
-        """Steps 3+4 of the turn loop.
-
-        error  = signed angle from current view to ideal (heading-90)
-        curve  = clamped road bend proportional to error  (step 3)
-        sky w  = curve * scale   ->  same value drives both  (step 4)
-        """
+        """Steps 3+4 of the turn loop."""
         error = self._angle_diff(self._view_az, self._view_az_target)
 
         MAX_BEND = 1.0
@@ -429,7 +424,7 @@ class ContinuousWalkStream:
         return abs(float(getattr(layer, "parallax", 0.0)) - 1.0) < 0.05
 
     def _warp_road_layer(self, layer_img):
-        """Bend road from kappa: left (k<0) UP, right (k>0) DOWN; same k as sky."""
+        """Bend road: +kappa -> UP (sign matches sky)."""
         kappa = self._curve
         if abs(kappa) < 0.02:
             return layer_img
@@ -441,7 +436,7 @@ class ContinuousWalkStream:
             layer_img = layer_img.convert("RGBA")
         arr = np.asarray(layer_img)
         h, w = arr.shape[:2]
-        max_dy = float(max(-28.0, min(28.0, -kappa * 28.0)))
+        max_dy = float(max(-28.0, min(28.0, kappa * 28.0)))
         if abs(max_dy) < 0.8:
             return layer_img
         cx = float(self._char_sx)
