@@ -1,7 +1,8 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
 Sky projection smoothly follows route heading.
-Curved road ribbon is drawn (not warped) so background stays intact.
+Road/ground layer alone is bent from look-ahead curvature;
+mid/features stay straight; walk position unchanged.
 """
 from __future__ import annotations
 
@@ -161,43 +162,6 @@ class ContinuousWalkStream:
         self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
         ac = 1.0 - math.exp(-dt / 0.7)
         self._curve += (self._curve_target - self._curve) * ac
-
-    def _draw_curved_road(self, canvas):
-        """Draw curved asphalt ribbon — never warp background pixels."""
-        if self.geo is None:
-            return canvas
-        kappa = self._curve
-        w, h = canvas.size
-        cx = self._char_sx
-        y_near = int(min(h - 2, self._char_sy + 10))
-        y_far = int(h * 0.62)
-        if y_near <= y_far + 8:
-            y_near = min(h - 2, y_far + 48)
-        half_near = w * 0.22
-        half_far = w * 0.055
-        bend = max(-50.0, min(50.0, kappa * 160.0))
-        steps = 14
-        left, right = [], []
-        for i in range(steps + 1):
-            t = i / steps
-            y = y_far + (y_near - y_far) * t
-            bend_t = bend * (1.0 - t) ** 2
-            half = half_far + (half_near - half_far) * (t * t)
-            left.append((cx - half + bend_t, y))
-            right.append((cx + half + bend_t, y))
-        poly = left + list(reversed(right))
-        layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(layer)
-        draw.polygon(poly, fill=(68, 70, 76, 200))
-        if len(left) >= 2:
-            draw.line(left, fill=(35, 35, 40, 200), width=2)
-            draw.line(right, fill=(35, 35, 40, 200), width=2)
-            mid = [((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5) for a, b in zip(left, right)]
-            for i in range(0, len(mid) - 1, 2):
-                draw.line([mid[i], mid[i + 1]], fill=(210, 190, 70, 150), width=2)
-        if canvas.mode != "RGBA":
-            canvas = canvas.convert("RGBA")
-        return Image.alpha_composite(canvas, layer)
 
     def _geo_mood_at(self, world_x):
         return self._geo_mood
@@ -433,6 +397,47 @@ class ContinuousWalkStream:
         canvas.alpha_composite(scaled, (int(left), y))
         return canvas
 
+    def _is_road_layer(self, layer) -> bool:
+        p = str(getattr(layer, "path", "")).lower()
+        if "landstrasse" in p or "ground" in p:
+            return True
+        return abs(float(getattr(layer, "parallax", 0.0)) - 1.0) < 0.05
+
+    def _warp_road_layer(self, layer_img):
+        """Bend only the road/ground layer; scenery is never touched."""
+        kappa = self._curve
+        if abs(kappa) < 0.0005:
+            return layer_img
+        try:
+            import numpy as np
+        except ImportError:
+            return layer_img
+        if layer_img.mode != "RGBA":
+            layer_img = layer_img.convert("RGBA")
+        arr = np.asarray(layer_img)
+        h, w = arr.shape[:2]
+        alpha = arr[..., 3]
+        rows = np.where(alpha.max(axis=1) > 8)[0]
+        if rows.size == 0:
+            return layer_img
+        y0, y1 = int(rows[0]), int(rows[-1]) + 1
+        max_shift = float(max(-40.0, min(40.0, kappa * 200.0)))
+        if abs(max_shift) < 0.8:
+            return layer_img
+        cx = float(self._char_sx)
+        out = arr.copy()
+        xs = np.arange(w, dtype=np.float32)
+        nx = (xs - cx) / max(1.0, w * 0.5)
+        edge = nx * np.abs(nx)
+        span = max(1.0, float(y1 - y0 - 1))
+        for yi in range(y0, y1):
+            depth = 1.0 - (yi - y0) / span
+            depth = depth * depth
+            shift = (max_shift * depth * edge).astype(np.int32)
+            src = np.clip(xs.astype(np.int32) - shift, 0, w - 1)
+            out[yi, np.arange(w)] = arr[yi, src]
+        return Image.fromarray(out, "RGBA")
+
     def _blit_tiled_layer(self, canvas, layer, state):
         path = Path(layer.path)
         if not path.is_file():
@@ -442,6 +447,22 @@ class ContinuousWalkStream:
         if canvas.mode != "RGBA":
             canvas = canvas.convert("RGBA")
         w = canvas.size[0]
+        bend = self._is_road_layer(layer) and abs(self._curve) >= 0.0005
+        if bend:
+            temp = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            if layer.repeat_x:
+                iw = img.size[0]
+                if iw <= 0:
+                    return canvas
+                x = (int(ox) % iw) - iw
+                while x < w + iw:
+                    temp.alpha_composite(img, (x, int(oy)))
+                    x += iw
+            else:
+                temp.alpha_composite(img, (int(ox), int(oy)))
+            temp = self._warp_road_layer(temp)
+            canvas.alpha_composite(temp)
+            return canvas
         if layer.repeat_x:
             iw = img.size[0]
             if iw <= 0:
@@ -534,7 +555,6 @@ class ContinuousWalkStream:
             while bi < len(base_layers):
                 canvas = self._blit_tiled_layer(canvas, base_layers[bi], state)
                 bi += 1
-            canvas = self._draw_curved_road(canvas)
             canvas = self._draw_boundary_signs(canvas, body_x)
             char = self.renderer.render_character(
                 state, self.rig, (self.cfg.width, self.cfg.height)
