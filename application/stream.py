@@ -1,8 +1,7 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
-Sky projection smoothly follows route heading.
-Road bends only while path heading changes (look-ahead curvature).
-When walking constant direction again the road settles fully straight.
+Sky shift and road bend share the same turn signal (look-ahead Δheading).
+While turning both move together; on straight both settle and hold.
 """
 from __future__ import annotations
 
@@ -100,6 +99,7 @@ class ContinuousWalkStream:
         self._view_az_target = 180.0
         self._curve = 0.0
         self._curve_target = 0.0
+        self._turning = False
         self._geo_mood = RegionMood.OFFENLAND
         self._geo_fetching = False
         self._last_geo_fetch = 0.0
@@ -142,21 +142,23 @@ class ContinuousWalkStream:
         cur_m = self._world_to_geo_m(body_x)
         lon, lat, heading = self.geo.route.sample(cur_m)
         self._view_az_target = heading
-        # Road bend follows instantaneous path curvature only:
-        # Δheading over a short look-ahead. When heading is constant again → 0.
+        # Shared turn signal for sky + road: both react only while heading changes.
         try:
             look_m = 80.0
             total = max(1.0, float(self.geo.route.total_m))
             ahead_m = (cur_m + look_m) % total
             _, _, heading_ahead = self.geo.route.sample(ahead_m)
             d_deg = self._angle_diff(heading, heading_ahead)
-            # deadband: < ~2.5° over look-ahead counts as straight
+            # deadband: < ~2.5° over look-ahead = straight (no bend, no sky shift)
             if abs(d_deg) < 2.5:
                 self._curve_target = 0.0
+                self._turning = False
             else:
                 self._curve_target = d_deg / look_m  # deg per meter
+                self._turning = True
         except Exception:
             self._curve_target = 0.0
+            self._turning = False
         from domain.geo.context import GeoSample as GS
         prev = self._geo_sample
         self._geo_sample = GS(
@@ -167,18 +169,31 @@ class ContinuousWalkStream:
         )
 
     def _smooth_view(self, dt: float) -> None:
-        a = 1.0 - math.exp(-dt / 1.0)
-        self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
-        # bend only while turning; settle hard to 0 once the path is straight
-        if abs(self._curve_target) < 1e-6:
-            # fast decay toward fully straight
+        """Sky shift and road bend share the same turn window.
+
+        While the path is turning (_turning): sky tracks heading, road bends.
+        Once straight again: both settle together — road → 0, sky finishes to
+        the new fixed heading, then holds.
+        """
+        turning = bool(getattr(self, "_turning", False)) or abs(self._curve_target) >= 1e-6
+        if turning:
+            # active turn: both follow at the same pace
+            a = 1.0 - math.exp(-dt / 0.55)
+            self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
+            self._curve += (self._curve_target - self._curve) * a
+        else:
+            # straight: road snaps out of bend, sky finishes residual then holds
             ac = 1.0 - math.exp(-dt / 0.25)
             self._curve += (0.0 - self._curve) * ac
             if abs(self._curve) < 0.0004:
                 self._curve = 0.0
-        else:
-            ac = 1.0 - math.exp(-dt / 0.55)
-            self._curve += (self._curve_target - self._curve) * ac
+            # residual heading catch-up (short), then freeze
+            d_az = abs(self._angle_diff(self._view_az, self._view_az_target))
+            if d_az > 0.15:
+                a = 1.0 - math.exp(-dt / 0.25)
+                self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
+            else:
+                self._view_az = self._view_az_target
 
     def _geo_mood_at(self, world_x):
         return self._geo_mood
