@@ -1,10 +1,7 @@
-"""Celestial sphere projection: view from Germany facing SOUTH.
+"""Celestial sphere projection: view along walking heading.
 
-Coordinate system on screen (horizontal FOV looking south):
-  x: east (left) ← south (center) → west (right)
-  y: horizon (bottom of sky band) → zenith (top)
-
-Uses standard equatorial → horizontal conversion via local sidereal time.
+Azimuth: 0=N, 90=E, 180=S, 270=W.
+Screen: left/right of view_az, horizon → zenith.
 """
 
 from __future__ import annotations
@@ -14,24 +11,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-DEFAULT_LAT = 51.0   # central Germany
+DEFAULT_LAT = 51.0
 DEFAULT_LON = 10.0
-
-# FOV for the south-facing view (degrees)
-AZ_HALF_FOV = 90.0   # show az 90°(E) … 270°(W)  → 180° wide
-ALT_MAX = 90.0       # horizon to zenith
+AZ_HALF_FOV = 90.0
+ALT_MAX = 90.0
 
 
 @dataclass(frozen=True, slots=True)
 class Star:
     name: str
-    ra_hours: float   # right ascension in hours (0–24)
-    dec_deg: float    # declination in degrees
-    mag: float        # visual magnitude (lower = brighter)
+    ra_hours: float
+    dec_deg: float
+    mag: float
 
 
-# Brightest stars visible from ~51°N (mag ≤ 2.0 + a few more)
-# RA in hours, Dec in degrees — J2000 approximate
 BRIGHT_STARS: tuple[Star, ...] = (
     Star("Sirius", 6.7525, -16.716, -1.46),
     Star("Arcturus", 14.2610, 19.182, -0.05),
@@ -88,15 +81,13 @@ BRIGHT_STARS: tuple[Star, ...] = (
 
 @dataclass(frozen=True, slots=True)
 class SkyPoint:
-    """A celestial object projected onto the south-facing screen."""
-
     name: str
     alt_deg: float
     az_deg: float
-    x: float          # screen x
-    y: float          # screen y
+    x: float
+    y: float
     mag: float
-    kind: str         # "star" | "sun" | "moon"
+    kind: str
 
 
 def _julian_date(dt: datetime) -> float:
@@ -115,18 +106,15 @@ def _julian_date(dt: datetime) -> float:
 
 
 def local_sidereal_time_deg(dt: datetime, lon_deg: float = DEFAULT_LON) -> float:
-    """Local mean sidereal time in degrees."""
     jd = _julian_date(dt)
     T = (jd - 2451545.0) / 36525.0
-    # Greenwich mean sidereal time (degrees)
     gmst = (
         280.46061837
         + 360.98564736629 * (jd - 2451545.0)
         + 0.000387933 * T * T
         - T * T * T / 38710000.0
     )
-    lmst = (gmst + lon_deg) % 360.0
-    return lmst
+    return (gmst + lon_deg) % 360.0
 
 
 def equatorial_to_horizontal(
@@ -136,29 +124,45 @@ def equatorial_to_horizontal(
     lat_deg: float = DEFAULT_LAT,
     lon_deg: float = DEFAULT_LON,
 ) -> tuple[float, float]:
-    """
-    Convert RA/Dec → altitude, azimuth (degrees).
-
-    Azimuth: 0=N, 90=E, 180=S, 270=W.
-    """
     lst = local_sidereal_time_deg(dt, lon_deg)
     ra_deg = ra_hours * 15.0
-    ha = math.radians((lst - ra_deg) % 360.0)  # hour angle
+    ha = math.radians((lst - ra_deg) % 360.0)
     dec = math.radians(dec_deg)
     lat = math.radians(lat_deg)
-
     sin_alt = math.sin(dec) * math.sin(lat) + math.cos(dec) * math.cos(lat) * math.cos(ha)
     alt = math.degrees(math.asin(max(-1.0, min(1.0, sin_alt))))
-
     cos_az = (
         (math.sin(dec) - math.sin(math.radians(alt)) * math.sin(lat))
         / (math.cos(math.radians(alt)) * math.cos(lat) + 1e-12)
     )
     az = math.degrees(math.acos(max(-1.0, min(1.0, cos_az))))
-    # Hour angle > 0 → object is west of meridian
     if math.sin(ha) > 0:
         az = 360.0 - az
     return alt, az
+
+
+def heading_project(
+    alt_deg: float,
+    az_deg: float,
+    width: int,
+    height: int,
+    *,
+    view_az_deg: float = 180.0,
+    horizon_y_frac: float = 0.55,
+    az_half_fov: float = AZ_HALF_FOV,
+) -> tuple[float, float] | None:
+    """Project onto camera facing view_az_deg (walking heading)."""
+    if alt_deg < -1.0:
+        return None
+    d_az = ((az_deg - view_az_deg + 540.0) % 360.0) - 180.0
+    if abs(d_az) > az_half_fov:
+        return None
+    horizon_y = height * horizon_y_frac
+    zenith_y = height * 0.02
+    x = width * 0.5 + (d_az / az_half_fov) * (width * 0.5)
+    t = max(0.0, min(1.0, alt_deg / 90.0))
+    y = horizon_y + (zenith_y - horizon_y) * t
+    return x, y
 
 
 def south_facing_project(
@@ -170,33 +174,12 @@ def south_facing_project(
     horizon_y_frac: float = 0.55,
     az_half_fov: float = AZ_HALF_FOV,
 ) -> tuple[float, float] | None:
-    """
-    Project horizontal coords onto a south-facing camera.
-
-    Screen layout:
-      x = 0        → az = 180° − az_half_fov  (east side)
-      x = width/2  → az = 180° (due south)
-      x = width    → az = 180° + az_half_fov  (west side)
-      y = horizon  → alt = 0°
-      y → 0        → alt → 90° (zenith at top)
-
-    Returns None if outside FOV or below horizon.
-    """
-    if alt_deg < -1.0:
-        return None
-
-    # Offset from due south, range (−half … +half); positive = west
-    d_az = ((az_deg - 180.0 + 540.0) % 360.0) - 180.0
-    if abs(d_az) > az_half_fov:
-        return None
-
-    horizon_y = height * horizon_y_frac
-    zenith_y = height * 0.02
-
-    x = width * 0.5 + (d_az / az_half_fov) * (width * 0.5)
-    t = max(0.0, min(1.0, alt_deg / 90.0))
-    y = horizon_y + (zenith_y - horizon_y) * t
-    return x, y
+    return heading_project(
+        alt_deg, az_deg, width, height,
+        view_az_deg=180.0,
+        horizon_y_frac=horizon_y_frac,
+        az_half_fov=az_half_fov,
+    )
 
 
 def project_stars(
@@ -206,10 +189,10 @@ def project_stars(
     *,
     lat_deg: float = DEFAULT_LAT,
     lon_deg: float = DEFAULT_LON,
+    view_az_deg: float = 180.0,
     max_mag: float = 2.5,
     min_alt: float = 0.0,
 ) -> list[SkyPoint]:
-    """All catalog stars above horizon in the south-facing FOV."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ZoneInfo("Europe/Berlin"))
     out: list[SkyPoint] = []
@@ -219,20 +202,10 @@ def project_stars(
         alt, az = equatorial_to_horizontal(s.ra_hours, s.dec_deg, dt, lat_deg, lon_deg)
         if alt < min_alt:
             continue
-        xy = south_facing_project(alt, az, width, height)
+        xy = heading_project(alt, az, width, height, view_az_deg=view_az_deg)
         if xy is None:
             continue
-        out.append(
-            SkyPoint(
-                name=s.name,
-                alt_deg=alt,
-                az_deg=az,
-                x=xy[0],
-                y=xy[1],
-                mag=s.mag,
-                kind="star",
-            )
-        )
+        out.append(SkyPoint(name=s.name, alt_deg=alt, az_deg=az, x=xy[0], y=xy[1], mag=s.mag, kind="star"))
     return out
 
 
@@ -244,10 +217,9 @@ def project_body(
     name: str,
     kind: str,
     mag: float = 0.0,
+    view_az_deg: float = 180.0,
 ) -> SkyPoint | None:
-    xy = south_facing_project(alt_deg, az_deg, width, height)
+    xy = heading_project(alt_deg, az_deg, width, height, view_az_deg=view_az_deg)
     if xy is None:
         return None
-    return SkyPoint(
-        name=name, alt_deg=alt_deg, az_deg=az_deg, x=xy[0], y=xy[1], mag=mag, kind=kind
-    )
+    return SkyPoint(name=name, alt_deg=alt_deg, az_deg=az_deg, x=xy[0], y=xy[1], mag=mag, kind=kind)
