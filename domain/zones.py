@@ -200,6 +200,8 @@ class Feature:
 
 @dataclass(frozen=True, slots=True)
 class Region:
+    """Settlement / forest stretch with German-style entrance + exit signs."""
+
     mood: RegionMood
     start: float
     width: float
@@ -211,7 +213,17 @@ class Region:
 
     @property
     def sign_world_x(self) -> float:
+        """Ortseingang (Zeichen 310) — just before the settlement."""
         return self.start - 40.0
+
+    @property
+    def entrance_world_x(self) -> float:
+        return self.sign_world_x
+
+    @property
+    def exit_world_x(self) -> float:
+        """Ortsausgang (Zeichen 311) — just after the settlement."""
+        return self.end + 20.0
 
 
 def _weights_for_mood(mood: RegionMood) -> dict[FeatureKind, float]:
@@ -285,8 +297,9 @@ class LandscapeRoute:
     assets_root: Path = field(default_factory=lambda: Path("assets/backgrounds/zones"))
     features_root: Path = field(default_factory=lambda: Path("assets/backgrounds/features"))
     seed: int | None = None
-    # Optional: world_x → RegionMood from geo density climate
     mood_provider: Callable[[float], RegionMood | None] | None = None
+    # Optional: world_x → real place name (from map)
+    place_name_provider: Callable[[float], str | None] | None = None
     _region_end: float = 0.0
     _feature_x: float = 200.0
     _rng: random.Random = field(default_factory=random.Random)
@@ -327,6 +340,11 @@ class LandscapeRoute:
             if self.mood_provider is not None:
                 forced = self.mood_provider(self._region_end)
             reg = _make_region(self._rng, self._region_end, mood=forced)
+            # Prefer real map name when available
+            if reg.sign_text and self.place_name_provider is not None:
+                real = self.place_name_provider(reg.start)
+                if real:
+                    reg = Region(mood=reg.mood, start=reg.start, width=reg.width, sign_text=real)
             self.regions.append(reg)
             self._region_end = reg.end
 
