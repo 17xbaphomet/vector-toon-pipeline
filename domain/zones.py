@@ -2,6 +2,9 @@
 
 Optional geo mood provider biases soft regions from real density climate
 (no exact object placement).
+
+Ortsschilder use only real place names from the map (place_name_provider);
+never synthetic placeholders.
 """
 
 from __future__ import annotations
@@ -154,16 +157,6 @@ FEATURE_WIDTH: dict[FeatureKind, tuple[float, float]] = {
     FeatureKind.BUSCH: (100, 180),
 }
 
-SIGN_NAMES: dict[RegionMood, list[str]] = {
-    RegionMood.DORF: ["Musterdorf", "Kleinhausen", "Bergheim", "Lindenau", "Schönbach",
-                      "Falkenberg", "Rosenfeld", "Kirchdorf", "Amselfeld"],
-    RegionMood.STADT: ["Neustadt", "Altenburg", "Rheinfeld", "Hochstadt", "Mühlheim",
-                       "Westheim", "Ostburg", "Nordheim"],
-    RegionMood.WALD: ["Stadtwald", "Eichenforst", "Tannengrund", "Birkenhain",
-                      "Fichtenwald", "Buchenhain"],
-    RegionMood.OFFENLAND: [],
-}
-
 MOOD_GAP: dict[RegionMood, tuple[float, float]] = {
     RegionMood.OFFENLAND: (700, 2200),
     RegionMood.DORF: (180, 520),
@@ -200,7 +193,10 @@ class Feature:
 
 @dataclass(frozen=True, slots=True)
 class Region:
-    """Settlement / forest stretch with German-style entrance + exit signs."""
+    """Settlement / forest stretch with German-style entrance + exit signs.
+
+    sign_text is only set when a real map place name is known.
+    """
 
     mood: RegionMood
     start: float
@@ -274,20 +270,17 @@ def mood_from_name(name: str) -> RegionMood:
 
 
 def _make_region(rng: random.Random, x: float, mood: RegionMood | None = None) -> Region:
+    """Build a region. sign_text stays empty until a real map name is resolved."""
     mood = mood or _pick_mood(rng)
     if mood == RegionMood.OFFENLAND:
         width = rng.uniform(4000, 9000)
-        sign = ""
     elif mood == RegionMood.WALD:
         width = rng.uniform(2500, 5500)
-        sign = rng.choice(SIGN_NAMES[mood])
     elif mood == RegionMood.DORF:
         width = rng.uniform(1800, 3500)
-        sign = rng.choice(SIGN_NAMES[mood])
     else:
         width = rng.uniform(2200, 4500)
-        sign = rng.choice(SIGN_NAMES[mood])
-    return Region(mood=mood, start=x, width=width, sign_text=sign)
+    return Region(mood=mood, start=x, width=width, sign_text="")
 
 
 @dataclass
@@ -298,7 +291,7 @@ class LandscapeRoute:
     features_root: Path = field(default_factory=lambda: Path("assets/backgrounds/features"))
     seed: int | None = None
     mood_provider: Callable[[float], RegionMood | None] | None = None
-    # Optional: world_x → real place name (from map)
+    # Optional: world_x → real place name (from map / Nominatim)
     place_name_provider: Callable[[float], str | None] | None = None
     _region_end: float = 0.0
     _feature_x: float = 200.0
@@ -340,13 +333,39 @@ class LandscapeRoute:
             if self.mood_provider is not None:
                 forced = self.mood_provider(self._region_end)
             reg = _make_region(self._rng, self._region_end, mood=forced)
-            # Prefer real map name when available
-            if reg.sign_text and self.place_name_provider is not None:
+            # Only real map names — never synthetic placeholders
+            if (
+                reg.mood != RegionMood.OFFENLAND
+                and self.place_name_provider is not None
+            ):
                 real = self.place_name_provider(reg.start)
                 if real:
-                    reg = Region(mood=reg.mood, start=reg.start, width=reg.width, sign_text=real)
+                    reg = Region(
+                        mood=reg.mood, start=reg.start, width=reg.width, sign_text=real
+                    )
             self.regions.append(reg)
             self._region_end = reg.end
+
+    def resolve_place_names(self) -> None:
+        """Fill missing sign_text from the map provider (real names only)."""
+        if self.place_name_provider is None:
+            return
+        updated: list[Region] = []
+        changed = False
+        for reg in self.regions:
+            if reg.mood == RegionMood.OFFENLAND or reg.sign_text:
+                updated.append(reg)
+                continue
+            real = self.place_name_provider(reg.start)
+            if real:
+                updated.append(
+                    Region(mood=reg.mood, start=reg.start, width=reg.width, sign_text=real)
+                )
+                changed = True
+            else:
+                updated.append(reg)
+        if changed:
+            self.regions = updated
 
     def _extend_features(self, until: float) -> None:
         while self._feature_x < until:
