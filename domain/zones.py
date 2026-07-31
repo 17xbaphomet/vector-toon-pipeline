@@ -59,12 +59,42 @@ class RegionMood(str, Enum):
     WALD = "wald"
 
 
-DEPTH_PARAMS: dict[Depth, tuple[float, float, float]] = {
-    # parallax, scale, y_offset — NEAR parallax < 1.0 so features always behind road
-    Depth.NEAR: (0.92, 1.00, 0.0),
-    Depth.MID: (0.55, 0.70, -35.0),
-    Depth.FAR: (0.28, 0.45, -70.0),
+# Continuous depth t∈[0,1]: higher bottom edge ⇔ larger t ⇔ further back.
+# Strictly monotonic so no object with a higher underside can sit closer.
+NEAR_PARALLAX = 0.92   # still < 1.0 so features stay behind the road layer
+FAR_PARALLAX = 0.28
+NEAR_SCALE = 1.00
+FAR_SCALE = 0.45
+NEAR_Y = 0.0           # content bottom at ground plane
+FAR_Y = -70.0          # content bottom higher on screen
+
+# Kind bias still uses discrete bands; each maps to a t-range.
+DEPTH_T_RANGE: dict[Depth, tuple[float, float]] = {
+    Depth.NEAR: (0.00, 0.33),
+    Depth.MID: (0.33, 0.66),
+    Depth.FAR: (0.66, 1.00),
 }
+
+# Legacy discrete lookup (width scaling / compatibility)
+DEPTH_PARAMS: dict[Depth, tuple[float, float, float]] = {
+    Depth.NEAR: (NEAR_PARALLAX, NEAR_SCALE, NEAR_Y),
+    Depth.MID: (0.55, 0.70, -35.0),
+    Depth.FAR: (FAR_PARALLAX, FAR_SCALE, FAR_Y),
+}
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def depth_from_t(t: float) -> tuple[float, float, float]:
+    """(parallax, scale, y_offset) from continuous depth t. Monotonic."""
+    t = max(0.0, min(1.0, t))
+    return (
+        _lerp(NEAR_PARALLAX, FAR_PARALLAX, t),
+        _lerp(NEAR_SCALE, FAR_SCALE, t),
+        _lerp(NEAR_Y, FAR_Y, t),
+    )
 
 FEATURE_TAGS: dict[FeatureKind, Tag] = {
     FeatureKind.ACKER: Tag.FARM | Tag.RURAL | Tag.NATURE,
@@ -170,7 +200,8 @@ class Feature:
     kind: FeatureKind
     start: float
     width: float
-    depth: Depth = Depth.NEAR
+    depth: Depth = Depth.NEAR          # band bias only
+    depth_t: float = 0.0               # continuous 0=near … 1=far
     tags: Tag = Tag.NATURE
     props: FeatureProps = field(default_factory=FeatureProps)
 
@@ -180,15 +211,17 @@ class Feature:
 
     @property
     def parallax(self) -> float:
-        return DEPTH_PARAMS[self.depth][0]
+        # smaller parallax = further back; locked to depth_t
+        return depth_from_t(self.depth_t)[0]
 
     @property
     def scale(self) -> float:
-        return DEPTH_PARAMS[self.depth][1] * self.props.scale_mul
+        return depth_from_t(self.depth_t)[1] * self.props.scale_mul
 
     @property
     def y_offset(self) -> float:
-        return DEPTH_PARAMS[self.depth][2] + self.props.y_jitter
+        # more negative = higher on screen = further back; +y_jitter digs slightly
+        return depth_from_t(self.depth_t)[2] + self.props.y_jitter
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +279,14 @@ def _pick_depth(rng: random.Random, kind: FeatureKind) -> Depth:
     depths = list(weights.keys())
     w = [weights[d] for d in depths]
     return rng.choices(depths, weights=w, k=1)[0]
+
+
+def _pick_depth_t(rng: random.Random, kind: FeatureKind) -> tuple[Depth, float]:
+    """Pick discrete band (for kind bias) then continuous t inside that band."""
+    depth = _pick_depth(rng, kind)
+    lo, hi = DEPTH_T_RANGE[depth]
+    t = rng.uniform(lo, hi)
+    return depth, t
 
 
 def _pick_mood(rng: random.Random) -> RegionMood:
@@ -410,15 +451,16 @@ class LandscapeRoute:
             mood = self._mood_at(self._feature_x)
             weights = _weights_for_mood(mood)
             kind = _pick_kind(self._rng, weights)
-            depth = _pick_depth(self._rng, kind)
+            depth, depth_t = _pick_depth_t(self._rng, kind)
             props = sample_props(self._rng, kind.value)
             lo, hi = FEATURE_WIDTH[kind]
-            depth_scale = DEPTH_PARAMS[depth][1]
+            depth_scale = depth_from_t(depth_t)[1]
             fw = self._rng.uniform(lo, hi) / depth_scale * props.scale_mul
             self.features.append(
                 Feature(
                     kind=kind, start=self._feature_x, width=fw,
-                    depth=depth, tags=FEATURE_TAGS[kind], props=props,
+                    depth=depth, depth_t=depth_t,
+                    tags=FEATURE_TAGS[kind], props=props,
                 )
             )
             gap_lo, gap_hi = MOOD_GAP[mood]
@@ -446,7 +488,8 @@ class LandscapeRoute:
             m = margin / max(f.parallax, 0.15)
             if (f.start - m) <= distance <= (f.end + m):
                 out.append(f)
-        out.sort(key=lambda f: (f.parallax, f.start))
+        # far first (small parallax), then higher underside first — locked by depth_t
+        out.sort(key=lambda f: (f.parallax, f.y_offset, f.start))
         return out
 
     def active_regions(self, distance: float, margin: float = 800.0) -> list[Region]:
