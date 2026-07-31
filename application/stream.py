@@ -1,8 +1,10 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
-Sky view ideal = heading-90 (90 deg left of walk). While turning, BOTH road bend
-and sky rotation rate are driven by the same kappa (deg/m): omega = kappa * v.
-No independent azimuth chase during turns (prevents sun flicker).
+Loop every frame:
+  1. map heading
+  2. ideal_view = heading - 90
+  3. road bend = clamp(error to ideal)
+  4. sky rotates at speed proportional to road bend value
 """
 from __future__ import annotations
 
@@ -139,32 +141,14 @@ class ContinuousWalkStream:
         return (a + ContinuousWalkStream._angle_diff(a, b) * t) % 360.0
 
     def _update_heading(self, body_x):
+        """Step 1+2: map heading -> ideal sky view = heading - 90."""
         if self.geo is None:
             return
         cur_m = self._world_to_geo_m(body_x)
         lon, lat, heading_raw = self.geo.route.sample(cur_m)
-        a_h = 0.35
-        self._heading_s = self._angle_lerp(self._heading_s, heading_raw, a_h)
+        self._heading_s = self._angle_lerp(self._heading_s, heading_raw, 0.4)
         heading = self._heading_s
         self._view_az_target = (heading - 90.0) % 360.0
-        try:
-            look_m = 100.0
-            total = max(1.0, float(self.geo.route.total_m))
-            d_acc = 0.0
-            for lm in (look_m * 0.6, look_m, look_m * 1.4):
-                ahead_m = (cur_m + lm) % total
-                _, _, ha = self.geo.route.sample(ahead_m)
-                d_acc += self._angle_diff(heading_raw, ha) / lm
-            d_per_m = d_acc / 3.0
-            if abs(d_per_m) * look_m < 2.5:
-                self._curve_target = 0.0
-                self._turning = False
-            else:
-                self._curve_target = d_per_m
-                self._turning = True
-        except Exception:
-            self._curve_target = 0.0
-            self._turning = False
         from domain.geo.context import GeoSample as GS
         prev = self._geo_sample
         self._geo_sample = GS(
@@ -175,26 +159,35 @@ class ContinuousWalkStream:
         )
 
     def _smooth_view(self, dt: float) -> None:
-        """One kappa drives road bend amplitude AND sky rotation rate."""
-        if abs(self._curve_target) >= 1e-6 or bool(getattr(self, "_turning", False)):
-            a = 1.0 - math.exp(-dt / 0.4)
-            self._curve += (self._curve_target - self._curve) * a
-        else:
-            a = 1.0 - math.exp(-dt / 0.22)
-            self._curve += (0.0 - self._curve) * a
-            if abs(self._curve) < 0.00035:
-                self._curve = 0.0
+        """Steps 3+4 of the turn loop.
 
-        if abs(self._curve) >= 0.00035:
-            v = float(self.cfg.walk_speed_mps or 1.4)
-            self._view_az = (self._view_az + self._curve * v * dt) % 360.0
-        else:
-            d_az = abs(self._angle_diff(self._view_az, self._view_az_target))
-            if d_az > 0.15:
-                a = 1.0 - math.exp(-dt / 0.35)
-                self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
-            else:
+        error  = signed angle from current view to ideal (heading-90)
+        curve  = clamped road bend proportional to error  (step 3)
+        sky w  = curve * scale   ->  same value drives both  (step 4)
+        """
+        error = self._angle_diff(self._view_az, self._view_az_target)
+
+        MAX_BEND = 1.0
+        raw = error / 15.0
+        target_curve = max(-MAX_BEND, min(MAX_BEND, raw))
+        if abs(target_curve) < 0.04:
+            target_curve = 0.0
+
+        a = 1.0 - math.exp(-dt / 0.2)
+        self._curve += (target_curve - self._curve) * a
+        if abs(self._curve) < 0.02:
+            self._curve = 0.0
+
+        OMEGA_SCALE = 30.0
+        if abs(self._curve) >= 0.02:
+            self._view_az = (self._view_az + self._curve * OMEGA_SCALE * dt) % 360.0
+            new_err = self._angle_diff(self._view_az, self._view_az_target)
+            if error * new_err < 0:
                 self._view_az = self._view_az_target
+                self._curve = 0.0
+        else:
+            self._view_az = self._view_az_target
+            self._curve = 0.0
 
     def _geo_mood_at(self, world_x):
         return self._geo_mood
@@ -438,7 +431,7 @@ class ContinuousWalkStream:
     def _warp_road_layer(self, layer_img):
         """Bend road from kappa: left (k<0) UP, right (k>0) DOWN; same k as sky."""
         kappa = self._curve
-        if abs(kappa) < 0.0005:
+        if abs(kappa) < 0.02:
             return layer_img
         try:
             import numpy as np
@@ -448,7 +441,7 @@ class ContinuousWalkStream:
             layer_img = layer_img.convert("RGBA")
         arr = np.asarray(layer_img)
         h, w = arr.shape[:2]
-        max_dy = float(max(-28.0, min(28.0, -kappa * 160.0)))
+        max_dy = float(max(-28.0, min(28.0, -kappa * 28.0)))
         if abs(max_dy) < 0.8:
             return layer_img
         cx = float(self._char_sx)
@@ -481,7 +474,7 @@ class ContinuousWalkStream:
         if canvas.mode != "RGBA":
             canvas = canvas.convert("RGBA")
         w = canvas.size[0]
-        bend = self._is_road_layer(layer) and abs(self._curve) >= 0.0005
+        bend = self._is_road_layer(layer) and abs(self._curve) >= 0.02
         if bend:
             temp = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
             if layer.repeat_x:
