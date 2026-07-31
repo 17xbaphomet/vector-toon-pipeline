@@ -1,8 +1,7 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
-Sky shift and road bend share the same turn signal (look-ahead Δheading).
-Left turn: sky migrates RIGHT, road bends UP; right turn: opposite.
-While turning both move together; on straight both settle and hold.
+Road bend amplitude and sky shift rate are strictly coupled via one kappa.
+Left turn: sky RIGHT + road UP; right turn: opposite. kappa=0 → both hold.
 """
 from __future__ import annotations
 
@@ -168,19 +167,32 @@ class ContinuousWalkStream:
         )
 
     def _smooth_view(self, dt: float) -> None:
-        turning = bool(getattr(self, "_turning", False)) or abs(self._curve_target) >= 1e-6
-        if turning:
-            a = 1.0 - math.exp(-dt / 0.55)
-            self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
+        """Strict coupling: one kappa drives road bend AND sky rotation rate.
+
+        _curve tracks path curvature (deg/m). Road warp uses _curve directly.
+        Sky azimuth advances at omega = _curve * walk_speed_mps (deg/s), so
+        when the road is bent the sky shifts proportionally; when kappa→0 both
+        settle together. Residual heading snap only after kappa is zero.
+        """
+        if abs(self._curve_target) >= 1e-6 or bool(getattr(self, "_turning", False)):
+            a = 1.0 - math.exp(-dt / 0.45)
             self._curve += (self._curve_target - self._curve) * a
         else:
-            ac = 1.0 - math.exp(-dt / 0.25)
-            self._curve += (0.0 - self._curve) * ac
+            a = 1.0 - math.exp(-dt / 0.25)
+            self._curve += (0.0 - self._curve) * a
             if abs(self._curve) < 0.0004:
                 self._curve = 0.0
+
+        if abs(self._curve) >= 0.0004:
+            v = float(self.cfg.walk_speed_mps or 1.4)
+            omega = self._curve * v  # deg/s
+            self._view_az = (self._view_az + omega * dt) % 360.0
+            pull = 1.0 - math.exp(-dt / 2.0)
+            self._view_az = self._angle_lerp(self._view_az, self._view_az_target, pull * 0.35)
+        else:
             d_az = abs(self._angle_diff(self._view_az, self._view_az_target))
-            if d_az > 0.15:
-                a = 1.0 - math.exp(-dt / 0.25)
+            if d_az > 0.2:
+                a = 1.0 - math.exp(-dt / 0.3)
                 self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
             else:
                 self._view_az = self._view_az_target
