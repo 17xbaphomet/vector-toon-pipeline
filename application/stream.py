@@ -1,7 +1,12 @@
-"""Stream: organic features + GeoContext climate + heading sky."""
+"""Stream: organic features + GeoContext climate + heading sky.
+
+Visual walk cycle stays cartoon-paced; geo distance advances at walk_speed_mps.
+Network (weather/OSM) never blocks the frame loop.
+"""
 from __future__ import annotations
 
 import io
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -29,6 +34,10 @@ from infrastructure.render_cache import (
 )
 from infrastructure.renderers.pillow_cutout import PillowCutoutRenderer
 
+# Cartoon scroll (world units / s): step_length / (cycle/2) = 40 / 0.3 ≈ 133.3
+# Real walking ≈ 1.4 m/s → world_to_meters ≈ 1.4 / 133.3 ≈ 0.0105
+DEFAULT_WALK_MPS = 1.4
+
 
 @dataclass
 class StreamConfig:
@@ -46,8 +55,11 @@ class StreamConfig:
     time_scale: float = 1.0
     start_time: datetime | None = None
     use_geo: bool = True
-    world_to_meters: float = 1.0
+    # Real metres advanced per world-unit (auto from walk_speed_mps if None)
+    world_to_meters: float | None = None
+    walk_speed_mps: float = DEFAULT_WALK_MPS
     geo_live: bool = True
+    geo_refresh_s: float = 8.0  # how often to hit weather/OSM (background)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +88,10 @@ class ContinuousWalkStream:
         self._t0 = time.perf_counter()
         self._running = False
         sample = grounded_walk(0.0, step_length=self.cfg.step_length, cycle=self.cfg.cycle)
-        self._scroll_speed = sample["scroll_speed"]
+        self._scroll_speed = sample["scroll_speed"]  # world units / s
+        # Map cartoon scroll → real metres/s
+        if self.cfg.world_to_meters is None:
+            self.cfg.world_to_meters = self.cfg.walk_speed_mps / max(self._scroll_speed, 1e-6)
         self._char_sx = self.cfg.width * 0.40
         self._char_sy = self.cfg.height * 0.82
         tz = ZoneInfo(self.cfg.tz)
@@ -88,43 +103,84 @@ class ContinuousWalkStream:
         self.geo: GeoContext | None = None
         self._geo_sample: GeoSample | None = None
         self._view_az = 180.0
+        self._geo_mood = RegionMood.OFFENLAND
+        self._geo_fetching = False
+        self._last_geo_fetch = 0.0
         if self.cfg.use_geo:
             try:
                 gr = geo_route or (geo.route if geo else demo_route_frankfurt_heidelberg())
                 self.geo = geo or GeoContext(gr)
+                # elevations once at start (can block briefly — ok before stream)
                 try:
                     self.geo.enrich_elevations()
                 except Exception:
                     pass
                 self.route.mood_provider = self._geo_mood_at
+                # prime heading without network
+                self._update_heading(0.0)
             except Exception as exc:
                 print(f"Geo disabled ({exc})")
                 self.geo = None
 
     def _world_to_geo_m(self, body_x: float) -> float:
+        w2m = self.cfg.world_to_meters or 0.0105
         if self.geo is None or self.geo.route.total_m <= 0:
-            return body_x * self.cfg.world_to_meters
-        return (body_x * self.cfg.world_to_meters) % max(1.0, self.geo.route.total_m)
+            return body_x * w2m
+        return (body_x * w2m) % max(1.0, self.geo.route.total_m)
 
-    def _geo_mood_at(self, world_x: float) -> RegionMood | None:
-        if self.geo is None:
-            return None
-        try:
-            s = self.geo.sample(self._world_to_geo_m(world_x), fetch_live=self.cfg.geo_live)
-            return mood_from_name(s.mood_name)
-        except Exception:
-            return None
-
-    def _refresh_geo(self, body_x: float) -> None:
+    def _update_heading(self, body_x: float) -> None:
+        """Pure geometry — never blocks."""
         if self.geo is None:
             return
-        try:
-            self._geo_sample = self.geo.sample(
-                self._world_to_geo_m(body_x), fetch_live=self.cfg.geo_live
+        lon, lat, heading = self.geo.route.sample(self._world_to_geo_m(body_x))
+        self._view_az = heading
+        # lightweight sample without network for lat/lon display
+        if self._geo_sample is None:
+            from domain.geo.context import GeoSample
+            self._geo_sample = GeoSample(
+                distance_m=self._world_to_geo_m(body_x),
+                lon=lon, lat=lat, heading_deg=heading,
+                elevation_m=self.geo.route.elevation_at(self._world_to_geo_m(body_x)),
+                weather=None, landuse=None,
             )
-            self._view_az = self._geo_sample.heading_deg
-        except Exception:
-            pass
+        else:
+            # replace with updated pose, keep weather/landuse
+            from domain.geo.context import GeoSample
+            self._geo_sample = GeoSample(
+                distance_m=self._world_to_geo_m(body_x),
+                lon=lon, lat=lat, heading_deg=heading,
+                elevation_m=self.geo.route.elevation_at(self._world_to_geo_m(body_x)),
+                weather=self._geo_sample.weather,
+                landuse=self._geo_sample.landuse,
+            )
+
+    def _geo_mood_at(self, world_x: float) -> RegionMood | None:
+        """Never hits the network — uses last cached mood only."""
+        return self._geo_mood
+
+    def _fetch_geo_async(self, body_x: float) -> None:
+        """Background weather/OSM update."""
+        if self.geo is None or self._geo_fetching or not self.cfg.geo_live:
+            return
+        now = time.perf_counter()
+        if now - self._last_geo_fetch < self.cfg.geo_refresh_s:
+            return
+        self._geo_fetching = True
+        self._last_geo_fetch = now
+        dist = self._world_to_geo_m(body_x)
+
+        def worker():
+            try:
+                s = self.geo.sample(dist, fetch_live=True)
+                self._geo_sample = s
+                self._view_az = s.heading_deg
+                self._geo_mood = mood_from_name(s.mood_name)
+            except Exception:
+                pass
+            finally:
+                self._geo_fetching = False
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _scene_datetime(self, stream_t):
         return self._clock0 + timedelta(seconds=stream_t * self.cfg.time_scale)
@@ -323,6 +379,12 @@ class ContinuousWalkStream:
         base_layers = sorted(
             self.route.base_layers(self._scroll_speed, self.cfg.facing), key=lambda L: L.parallax
         )
+        w2m = self.cfg.world_to_meters or 0.0105
+        print(
+            f"Walk: {self._scroll_speed:.0f} wu/s visual · "
+            f"geo {self.cfg.walk_speed_mps:.1f} m/s "
+            f"(world_to_m={w2m:.4f})"
+        )
         while self._running:
             t = frame_i * dt
             if self.cfg.duration is not None and t >= self.cfg.duration:
@@ -333,8 +395,12 @@ class ContinuousWalkStream:
                 time.sleep(sleep)
             state = self._compose_state(t)
             body_x = self._scroll_speed * t
-            if frame_i % max(1, int(self.cfg.fps // 2)) == 0:
-                self._refresh_geo(body_x)
+            # cheap every frame: heading from polyline
+            if frame_i % 6 == 0:
+                self._update_heading(body_x)
+            # network only in background, rarely
+            if frame_i % max(1, int(self.cfg.fps * 2)) == 0:
+                self._fetch_geo_async(body_x)
             self.route.ensure_ahead(body_x, look_ahead=12000.0)
             if frame_i % 48 == 0:
                 self.route.prune_behind(body_x, keep_behind=10000.0)
@@ -413,7 +479,7 @@ def run_mjpeg_server(stream, host="0.0.0.0", port=8765):
     server = HTTPServer((host, port), Handler)
     geo_info = "off"
     if stream.geo is not None:
-        geo_info = f"on · {stream.geo.route.total_m/1000:.1f} km"
+        geo_info = f"on · {stream.geo.route.total_m/1000:.1f} km · {stream.cfg.walk_speed_mps:.1f} m/s"
     print(f"MJPEG → http://{host}:{port}/ · Features={len(stream.route.features)} · Geo={geo_info}")
     return server
 
