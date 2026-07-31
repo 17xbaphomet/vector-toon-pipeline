@@ -423,6 +423,12 @@ class ContinuousWalkStream:
             return canvas
         panel_w = max(1, int(abs(right - left)))
         panel_h = max(1, int(self.cfg.height * item.scale))
+        # Ground-cover (acker/sumpf): entire bbox inside opaque mid/ground band.
+        path_l = str(item.path).lower()
+        is_ground_cover = path_l.endswith("acker.svg") or path_l.endswith("sumpf.svg")
+        if is_ground_cover:
+            max_h = max(24, int(self.cfg.height * 0.75) - int(self.cfg.height * 0.58))
+            panel_h = min(panel_h, max_h)
         scaled = get_sized_rgba(
             item.path, item.props, panel_w, panel_h,
             self.renderer._svg_to_pil, apply_props_to_image,
@@ -430,6 +436,11 @@ class ContinuousWalkStream:
         sw, sh = scaled.size
         ground_y = int(self.cfg.height * 0.75)
         y = int(ground_y - sh + item.y_offset)
+        # Never let field/swamp top edge rise into transparent sky above mid hills
+        if is_ground_cover:
+            opaque_top = int(self.cfg.height * 0.58)
+            if y < opaque_top:
+                y = opaque_top
         x = int(left + (panel_w - sw) * 0.5)
         if canvas.mode != "RGBA":
             canvas = canvas.convert("RGBA")
