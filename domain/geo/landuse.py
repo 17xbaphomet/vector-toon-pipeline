@@ -1,7 +1,11 @@
-"""Map real-world landuse / density signals → RegionMood + feature biases.
+"""Coarse landscape character from real-world density signals.
 
-Primary online source: OpenStreetMap Overpass (practical for live routes).
-BKG LBM-DE / VG25 can be plugged in offline later as a LanduseProvider.
+IMPORTANT: This does NOT place real buildings or parcels.
+It only estimates densities (0..1) that bias organic feature spawn weights
+(Stadt / Dorf / Wald / Offenland). Exact geometry is intentionally ignored.
+
+Primary online source: OpenStreetMap Overpass (counts in a radius).
+BKG LBM-DE can later supply sealing/vegetation ratios the same way.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ class LandCover(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class LanduseSample:
+    """Soft climate only — densities for spawn bias, no object positions."""
+
     cover: LandCover
     building_density: float   # 0–1
     forest_density: float     # 0–1
@@ -48,7 +54,7 @@ class LanduseSample:
 
 
 def fetch_osm_landuse(lat: float, lon: float, radius_m: float = 400.0, timeout: float = 12.0) -> LanduseSample:
-    """Query Overpass around a point for landuse/building signals."""
+    """Count OSM tags in a radius → density climate (no geometries used)."""
     query = f"""
     [out:json][timeout:10];
     (
@@ -78,7 +84,6 @@ def fetch_osm_landuse(lat: float, lon: float, radius_m: float = 400.0, timeout: 
         )
 
     elements = payload.get("elements", [])
-    n = max(1, len(elements))
     buildings = forests = farms = industrial = water = 0
     for el in elements:
         tags = el.get("tags", {})
@@ -97,6 +102,7 @@ def fetch_osm_landuse(lat: float, lon: float, radius_m: float = 400.0, timeout: 
         if nat == "water" or lu == "reservoir":
             water += 1
 
+    # Soft normalizers — approximate character, not inventory counts
     bd = min(1.0, buildings / 25.0)
     fd = min(1.0, forests / 12.0)
     farm = min(1.0, farms / 12.0)
