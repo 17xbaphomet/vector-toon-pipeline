@@ -1,21 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="700" height="200" viewBox="0 0 700 200">
-  <!-- Solid swamp pool — fully opaque, sits on ground -->
-  <ellipse cx="350" cy="140" rx="320" ry="55" fill="#2E7D6F"/>
-  <ellipse cx="350" cy="135" rx="260" ry="40" fill="#3D9B8A"/>
-  <ellipse cx="350" cy="130" rx="180" ry="28" fill="#4DB6AC"/>
-  <!-- Reeds rooted in the water (opaque stems + tops) -->
-  <g stroke="#33691E" stroke-width="4" fill="none">
-    <path d="M80,160 Q85,100 80,50"/>
-    <path d="M110,165 Q105,95 115,45"/>
-    <path d="M480,160 Q485,100 478,48"/>
-    <path d="M520,165 Q515,95 525,45"/>
-    <path d="M560,160 Q565,105 558,55"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="80" viewBox="0 0 700 80">
+  <!-- Low swamp pool + short reeds: full bbox stays on opaque ground band -->
+  <ellipse cx="350" cy="55" rx="330" ry="25" fill="#2E7D6F"/>
+  <ellipse cx="350" cy="52" rx="260" ry="18" fill="#3D9B8A"/>
+  <ellipse cx="350" cy="50" rx="180" ry="12" fill="#4DB6AC"/>
+  <!-- Short reeds rooted in water (tops still inside pool band) -->
+  <g stroke="#33691E" stroke-width="3" fill="none">
+    <path d="M90,60 Q92,35 90,12"/>
+    <path d="M120,62 Q118,32 122,10"/>
+    <path d="M500,60 Q502,34 500,12"/>
+    <path d="M535,62 Q532,30 538,10"/>
+    <path d="M565,60 Q568,36 564,14"/>
   </g>
   <g fill="#558B2F">
-    <ellipse cx="80" cy="48" rx="7" ry="12"/>
-    <ellipse cx="115" cy="43" rx="7" ry="12"/>
-    <ellipse cx="478" cy="46" rx="7" ry="12"/>
-    <ellipse cx="525" cy="43" rx="7" ry="12"/>
-    <ellipse cx="558" cy="53" rx="7" ry="12"/>
+    <ellipse cx="90" cy="10" rx="5" ry="8"/>
+    <ellipse cx="122" cy="9" rx="5" ry="8"/>
+    <ellipse cx="500" cy="10" rx="5" ry="8"/>
+    <ellipse cx="538" cy="9" rx="5" ry="8"/>
+    <ellipse cx="564" cy="12" rx="5" ry="8"/>
   </g>
 </svg>
