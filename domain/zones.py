@@ -156,9 +156,9 @@ FEATURE_DEPTH_WEIGHTS: dict[FeatureKind, dict[Depth, float]] = {
     FeatureKind.WRACK: {Depth.NEAR: 1.0},
     FeatureKind.TIERE: {Depth.NEAR: 0.7, Depth.MID: 0.3},
     FeatureKind.HEUBALLEN: {Depth.NEAR: 0.6, Depth.MID: 0.4},
-    FeatureKind.SUMPF: {Depth.NEAR: 0.4, Depth.MID: 0.6},
+    FeatureKind.SUMPF: {Depth.NEAR: 1.0},  # ground cover — full surface on opaque plane
     FeatureKind.FELSEN: {Depth.NEAR: 0.3, Depth.MID: 0.5, Depth.FAR: 0.2},
-    FeatureKind.ACKER: {Depth.MID: 0.6, Depth.FAR: 0.4},
+    FeatureKind.ACKER: {Depth.NEAR: 1.0},  # ground cover — full surface on opaque plane
     FeatureKind.BAUERNHOF: {Depth.MID: 0.7, Depth.FAR: 0.3},
     FeatureKind.KAPELLE: {Depth.MID: 0.6, Depth.FAR: 0.4},
     FeatureKind.RUINE: {Depth.MID: 0.5, Depth.FAR: 0.5},
@@ -452,6 +452,9 @@ class LandscapeRoute:
             weights = _weights_for_mood(mood)
             kind = _pick_kind(self._rng, weights)
             depth, depth_t = _pick_depth_t(self._rng, kind)
+            # Ground-cover kinds stay glued to the opaque ground plane (no mid-air)
+            if kind in (FeatureKind.ACKER, FeatureKind.SUMPF):
+                depth, depth_t = Depth.NEAR, self._rng.uniform(0.0, 0.12)
             props = sample_props(self._rng, kind.value)
             lo, hi = FEATURE_WIDTH[kind]
             depth_scale = depth_from_t(depth_t)[1]
