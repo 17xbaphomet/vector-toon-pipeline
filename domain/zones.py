@@ -1,4 +1,8 @@
-"""Organic infinite landscape: tagged features + combinable props, forever."""
+"""Organic infinite landscape: tagged features + combinable props, forever.
+
+Optional geo mood provider biases soft regions from real density climate
+(no exact object placement).
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum, Flag, auto
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .feature_props import FeatureProps, sample_props
 from .value_objects import BackgroundLayer
@@ -250,8 +254,15 @@ def _pick_mood(rng: random.Random) -> RegionMood:
     )[0]
 
 
-def _make_region(rng: random.Random, x: float) -> Region:
-    mood = _pick_mood(rng)
+def mood_from_name(name: str) -> RegionMood:
+    try:
+        return RegionMood(name)
+    except ValueError:
+        return RegionMood.OFFENLAND
+
+
+def _make_region(rng: random.Random, x: float, mood: RegionMood | None = None) -> Region:
+    mood = mood or _pick_mood(rng)
     if mood == RegionMood.OFFENLAND:
         width = rng.uniform(4000, 9000)
         sign = ""
@@ -274,6 +285,8 @@ class LandscapeRoute:
     assets_root: Path = field(default_factory=lambda: Path("assets/backgrounds/zones"))
     features_root: Path = field(default_factory=lambda: Path("assets/backgrounds/features"))
     seed: int | None = None
+    # Optional: world_x → RegionMood from geo density climate
+    mood_provider: Callable[[float], RegionMood | None] | None = None
     _region_end: float = 0.0
     _feature_x: float = 200.0
     _rng: random.Random = field(default_factory=random.Random)
@@ -299,6 +312,10 @@ class LandscapeRoute:
         return self.features_root / f"{kind.value}.svg"
 
     def _mood_at(self, wx: float) -> RegionMood:
+        if self.mood_provider is not None:
+            m = self.mood_provider(wx)
+            if m is not None:
+                return m
         for r in self.regions:
             if r.start <= wx < r.end:
                 return r.mood
@@ -306,7 +323,10 @@ class LandscapeRoute:
 
     def _extend_regions(self, until: float) -> None:
         while self._region_end < until:
-            reg = _make_region(self._rng, self._region_end)
+            forced = None
+            if self.mood_provider is not None:
+                forced = self.mood_provider(self._region_end)
+            reg = _make_region(self._rng, self._region_end, mood=forced)
             self.regions.append(reg)
             self._region_end = reg.end
 
