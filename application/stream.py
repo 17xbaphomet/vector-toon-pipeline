@@ -1,25 +1,25 @@
-"""Stream: organic features + FeatureProps + render caches."""
+"""Stream: organic features + GeoContext climate + heading sky."""
 from __future__ import annotations
 
 import io
-import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Iterator, Sequence
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
-from domain.celestial import project_stars, south_facing_project
+from domain.celestial import heading_project, project_stars
 from domain.entities import CharacterRig, FrameState, SceneSpec
 from domain.feature_props import FeatureProps, apply_props_to_image
+from domain.geo import GeoContext, GeoSample
+from domain.geo.route import GeoRoute, demo_route_frankfurt_heidelberg
 from domain.procedural import grounded_walk, head_bob, parallax_offset
 from domain.sky import celestial_at, scene_grade, sky_colors
 from domain.value_objects import Affine, BackgroundLayer, CameraState, Viseme
-from domain.zones import LandscapeRoute, generate_route
+from domain.zones import LandscapeRoute, RegionMood, generate_route, mood_from_name
 from infrastructure.render_cache import (
     cache_stats,
     get_moon_sprite,
@@ -45,6 +45,9 @@ class StreamConfig:
     tz: str = "Europe/Berlin"
     time_scale: float = 1.0
     start_time: datetime | None = None
+    use_geo: bool = True
+    world_to_meters: float = 1.0
+    geo_live: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,16 +63,16 @@ class _DrawItem:
 
 
 class ContinuousWalkStream:
-    def __init__(self, scene, renderer, rig, config=None, route=None):
+    def __init__(
+        self, scene, renderer, rig, config=None, route=None,
+        geo_route: GeoRoute | None = None, geo: GeoContext | None = None,
+    ):
         self.scene, self.renderer, self.rig = scene, renderer, rig
         self.cfg = config or StreamConfig(
-            fps=float(scene.fps),
-            width=scene.width,
-            height=scene.height,
-            scale=getattr(rig, "default_scale", 1.15),
-            character_id=rig.id,
+            fps=float(scene.fps), width=scene.width, height=scene.height,
+            scale=getattr(rig, "default_scale", 1.15), character_id=rig.id,
         )
-        self.route = route or generate_route(length=15000.0, seed=self.cfg.route_seed)
+        self.route = route or generate_route(length=8000.0, seed=self.cfg.route_seed)
         self._t0 = time.perf_counter()
         self._running = False
         sample = grounded_walk(0.0, step_length=self.cfg.step_length, cycle=self.cfg.cycle)
@@ -80,34 +83,63 @@ class ContinuousWalkStream:
         self._clock0 = self.cfg.start_time or datetime.now(tz)
         if self._clock0.tzinfo is None:
             self._clock0 = self._clock0.replace(tzinfo=tz)
-        # reuseable draw buffer (avoid realloc each frame)
-        self._scratch = Image.new("RGBA", (self.cfg.width, self.cfg.height), (0, 0, 0, 0))
         self._last_sky_key = None
         self._last_sky_img = None
-        self._grade_cache_key = None
-        self._grade_params = None
+        self.geo: GeoContext | None = None
+        self._geo_sample: GeoSample | None = None
+        self._view_az = 180.0
+        if self.cfg.use_geo:
+            try:
+                gr = geo_route or (geo.route if geo else demo_route_frankfurt_heidelberg())
+                self.geo = geo or GeoContext(gr)
+                try:
+                    self.geo.enrich_elevations()
+                except Exception:
+                    pass
+                self.route.mood_provider = self._geo_mood_at
+            except Exception as exc:
+                print(f"Geo disabled ({exc})")
+                self.geo = None
+
+    def _world_to_geo_m(self, body_x: float) -> float:
+        if self.geo is None or self.geo.route.total_m <= 0:
+            return body_x * self.cfg.world_to_meters
+        return (body_x * self.cfg.world_to_meters) % max(1.0, self.geo.route.total_m)
+
+    def _geo_mood_at(self, world_x: float) -> RegionMood | None:
+        if self.geo is None:
+            return None
+        try:
+            s = self.geo.sample(self._world_to_geo_m(world_x), fetch_live=self.cfg.geo_live)
+            return mood_from_name(s.mood_name)
+        except Exception:
+            return None
+
+    def _refresh_geo(self, body_x: float) -> None:
+        if self.geo is None:
+            return
+        try:
+            self._geo_sample = self.geo.sample(
+                self._world_to_geo_m(body_x), fetch_live=self.cfg.geo_live
+            )
+            self._view_az = self._geo_sample.heading_deg
+        except Exception:
+            pass
 
     def _scene_datetime(self, stream_t):
         return self._clock0 + timedelta(seconds=stream_t * self.cfg.time_scale)
 
     def _compose_state(self, t):
-        gw = grounded_walk(
-            t, step_length=self.cfg.step_length, cycle=self.cfg.cycle, facing=self.cfg.facing
-        )
+        gw = grounded_walk(t, step_length=self.cfg.step_length, cycle=self.cfg.cycle, facing=self.cfg.facing)
         bones = dict(gw["bones"])
         bob = head_bob(t, amplitude=2.0, freq=2.5)
         head = bones.get("head", Affine.identity())
         bones["head"] = head.compose(Affine.translate(0.0, bob))
         return FrameState(
-            time=t,
-            character_id=self.cfg.character_id,
-            viseme=Viseme.X,
-            jaw_open=0.0,
-            bone_transforms=bones,
-            root_position=(self._char_sx, self._char_sy),
+            time=t, character_id=self.cfg.character_id, viseme=Viseme.X, jaw_open=0.0,
+            bone_transforms=bones, root_position=(self._char_sx, self._char_sy),
             root_rotation_deg=0.0 if self.cfg.facing > 0 else 180.0,
-            scale=self.cfg.scale * self.cfg.facing,
-            camera=CameraState(),
+            scale=self.cfg.scale * self.cfg.facing, camera=CameraState(),
         )
 
     def _world_to_screen_x(self, world_x, body_x, parallax=1.0):
@@ -115,7 +147,12 @@ class ContinuousWalkStream:
 
     def _make_sky_canvas(self, cel):
         top, bot = sky_colors(cel)
-        # quantize colors so nearby times share sky cache
+        if self._geo_sample and self._geo_sample.weather:
+            cloud = self._geo_sample.weather.sky_cloud_factor
+            if cloud > 0.15:
+                t = cloud * 0.55
+                top = tuple(int(c * (1 - t) + 140 * t) for c in top)
+                bot = tuple(int(c * (1 - t) + 160 * t) for c in bot)
         top_q = tuple(c // 4 * 4 for c in top)
         bot_q = tuple(c // 4 * 4 for c in bot)
         key = (self.cfg.width, self.cfg.height, top_q, bot_q)
@@ -132,7 +169,12 @@ class ContinuousWalkStream:
         strength = min(1.0, max(0.0, (-cel.sun_alt_deg) / 10.0))
         if strength < 0.05:
             return canvas
-        stars = project_stars(cel.local_time, canvas.width, canvas.height, max_mag=2.5)
+        lat = self._geo_sample.lat if self._geo_sample else 51.0
+        lon = self._geo_sample.lon if self._geo_sample else 10.0
+        stars = project_stars(
+            cel.local_time, canvas.width, canvas.height,
+            lat_deg=lat, lon_deg=lon, view_az_deg=self._view_az, max_mag=2.5,
+        )
         layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer)
         for s in stars:
@@ -143,7 +185,9 @@ class ContinuousWalkStream:
         return Image.alpha_composite(canvas, layer)
 
     def _draw_sun(self, canvas, cel):
-        pos = south_facing_project(cel.sun_alt_deg, cel.sun_az_deg, canvas.width, canvas.height)
+        pos = heading_project(
+            cel.sun_alt_deg, cel.sun_az_deg, canvas.width, canvas.height, view_az_deg=self._view_az
+        )
         if pos is None:
             return canvas
         x, y = pos
@@ -157,7 +201,9 @@ class ContinuousWalkStream:
         return Image.alpha_composite(canvas, layer)
 
     def _draw_moon(self, canvas, cel):
-        pos = south_facing_project(cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height)
+        pos = heading_project(
+            cel.moon_alt_deg, cel.moon_az_deg, canvas.width, canvas.height, view_az_deg=self._view_az
+        )
         if pos is None:
             return canvas
         x, y = pos
@@ -169,23 +215,27 @@ class ContinuousWalkStream:
 
     def _apply_grade(self, img, cel):
         grade = scene_grade(cel)
-        # skip if nearly identity
-        if (
-            abs(grade.brightness - 1.0) < 0.02
-            and abs(grade.saturation - 1.0) < 0.02
-            and abs(grade.tint_r) < 0.008
-            and abs(grade.tint_g) < 0.008
-            and abs(grade.tint_b) < 0.008
-        ):
+        brightness, saturation = grade.brightness, grade.saturation
+        if self._geo_sample and self._geo_sample.weather:
+            w = self._geo_sample.weather
+            if w.is_rainy or w.is_foggy:
+                brightness *= 0.88
+                saturation *= 0.75
+            elif w.sky_cloud_factor > 0.6:
+                brightness *= 0.94
+                saturation *= 0.9
+            if w.is_snowy:
+                saturation *= 0.7
+                brightness *= 1.05
+        if abs(brightness - 1.0) < 0.02 and abs(saturation - 1.0) < 0.02 and abs(grade.tint_r) < 0.008:
             return img.convert("RGB")
         rgb = img.convert("RGB")
-        if abs(grade.brightness - 1.0) > 0.02:
-            rgb = ImageEnhance.Brightness(rgb).enhance(grade.brightness)
-        if abs(grade.saturation - 1.0) > 0.02:
-            rgb = ImageEnhance.Color(rgb).enhance(grade.saturation)
+        if abs(brightness - 1.0) > 0.02:
+            rgb = ImageEnhance.Brightness(rgb).enhance(brightness)
+        if abs(saturation - 1.0) > 0.02:
+            rgb = ImageEnhance.Color(rgb).enhance(saturation)
         if any(abs(v) > 0.008 for v in (grade.tint_r, grade.tint_g, grade.tint_b)):
             import numpy as np
-
             arr = np.asarray(rgb, dtype=np.float32)
             arr[..., 0] = np.clip(arr[..., 0] + grade.tint_r * 255, 0, 255)
             arr[..., 1] = np.clip(arr[..., 1] + grade.tint_g * 255, 0, 255)
@@ -205,15 +255,10 @@ class ContinuousWalkStream:
         panel_w = max(1, int(abs(right - left)))
         panel_h = max(1, int(self.cfg.height * item.scale))
         scaled = get_sized_rgba(
-            item.path,
-            item.props,
-            panel_w,
-            panel_h,
-            self.renderer._svg_to_pil,
-            apply_props_to_image,
+            item.path, item.props, panel_w, panel_h,
+            self.renderer._svg_to_pil, apply_props_to_image,
         )
         y = int(self.cfg.height - panel_h + item.y_offset)
-        # direct alpha_composite at position is faster than paste+full composite
         if canvas.mode != "RGBA":
             canvas = canvas.convert("RGBA")
         canvas.alpha_composite(scaled, (int(left), y))
@@ -224,9 +269,7 @@ class ContinuousWalkStream:
         if not path.is_file():
             return canvas
         img = get_svg_rgba(path, self.renderer._svg_to_pil)
-        ox, oy = parallax_offset(
-            state.camera, layer.parallax, state.time, layer.scroll_x, layer.scroll_y
-        )
+        ox, oy = parallax_offset(state.camera, layer.parallax, state.time, layer.scroll_x, layer.scroll_y)
         if canvas.mode != "RGBA":
             canvas = canvas.convert("RGBA")
         w = canvas.size[0]
@@ -245,13 +288,8 @@ class ContinuousWalkStream:
     def _collect_draw_items(self, body_x):
         return [
             _DrawItem(
-                parallax=f.parallax,
-                path=self.route.feature_object_path(f.kind),
-                start=f.start,
-                end=f.end,
-                scale=f.scale,
-                y_offset=f.y_offset,
-                props=f.props,
+                parallax=f.parallax, path=self.route.feature_object_path(f.kind),
+                start=f.start, end=f.end, scale=f.scale, y_offset=f.y_offset, props=f.props,
             )
             for f in self.route.active_features(body_x)
         ]
@@ -266,22 +304,15 @@ class ContinuousWalkStream:
         plate_top = post_top - h + 8
         draw.rectangle([cx - 4, int(post_top), cx + 4, int(ground_y)], fill=(80, 80, 80, 255))
         x0, y0 = cx - w // 2, int(plate_top)
-        draw.rounded_rectangle(
-            [x0, y0, x0 + w, y0 + h],
-            radius=4,
-            fill=(245, 245, 245, 255),
-            outline=(25, 25, 25, 255),
-            width=3,
-        )
+        draw.rounded_rectangle([x0, y0, x0 + w, y0 + h], radius=4,
+            fill=(245, 245, 245, 255), outline=(25, 25, 25, 255), width=3)
         try:
             font = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
         except Exception:
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(
-            (cx - tw // 2, y0 + (h - th) // 2 - 1), text, fill=(20, 20, 20, 255), font=font
-        )
+        draw.text((cx - tw // 2, y0 + (h - th) // 2 - 1), text, fill=(20, 20, 20, 255), font=font)
         return Image.alpha_composite(img.convert("RGBA"), layer)
 
     def frames(self):
@@ -290,10 +321,8 @@ class ContinuousWalkStream:
         dt = 1.0 / max(self.cfg.fps, 1.0)
         frame_i = 0
         base_layers = sorted(
-            self.route.base_layers(self._scroll_speed, self.cfg.facing),
-            key=lambda L: L.parallax,
+            self.route.base_layers(self._scroll_speed, self.cfg.facing), key=lambda L: L.parallax
         )
-
         while self._running:
             t = frame_i * dt
             if self.cfg.duration is not None and t >= self.cfg.duration:
@@ -302,19 +331,18 @@ class ContinuousWalkStream:
             sleep = target - time.perf_counter()
             if sleep > 0:
                 time.sleep(sleep)
-
             state = self._compose_state(t)
             body_x = self._scroll_speed * t
-            self.route.ensure_ahead(body_x, look_ahead=15000.0)
+            if frame_i % max(1, int(self.cfg.fps // 2)) == 0:
+                self._refresh_geo(body_x)
+            self.route.ensure_ahead(body_x, look_ahead=12000.0)
             if frame_i % 48 == 0:
                 self.route.prune_behind(body_x, keep_behind=10000.0)
-
             cel = celestial_at(self._scene_datetime(t), tz=self.cfg.tz)
             canvas = self._make_sky_canvas(cel)
             canvas = self._draw_projected_stars(canvas, cel)
             canvas = self._draw_moon(canvas, cel)
             canvas = self._draw_sun(canvas, cel)
-
             items = sorted(self._collect_draw_items(body_x), key=lambda it: (it.parallax, it.order))
             bi = 0
             for item in items:
@@ -325,15 +353,11 @@ class ContinuousWalkStream:
             while bi < len(base_layers):
                 canvas = self._blit_tiled_layer(canvas, base_layers[bi], state)
                 bi += 1
-
             for reg in self.route.active_regions(body_x, margin=600):
                 if reg.sign_text:
                     sx = self._world_to_screen_x(reg.sign_world_x, body_x, parallax=1.0)
                     canvas = self._draw_ortsschild(canvas, reg.sign_text, sx, self._char_sy)
-
-            char = self.renderer.render_character(
-                state, self.rig, (self.cfg.width, self.cfg.height)
-            )
+            char = self.renderer.render_character(state, self.rig, (self.cfg.width, self.cfg.height))
             frame = Image.alpha_composite(canvas.convert("RGBA"), char)
             yield self._apply_grade(frame, cel)
             frame_i += 1
@@ -372,9 +396,7 @@ def run_mjpeg_server(stream, host="0.0.0.0", port=8765):
                 self.send_error(404)
                 return
             self.send_response(200)
-            self.send_header(
-                "Content-Type", f"multipart/x-mixed-replace; boundary={boundary.decode()}"
-            )
+            self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={boundary.decode()}")
             self.send_header("Cache-Control", "no-cache, no-store")
             self.end_headers()
             try:
@@ -389,32 +411,19 @@ def run_mjpeg_server(stream, host="0.0.0.0", port=8765):
                 pass
 
     server = HTTPServer((host, port), Handler)
-    stats = cache_stats()
-    print(f"MJPEG → http://{host}:{port}/ · {len(stream.route.features)} Features")
-    print(f"Cache ready (svg/variant/size LRU) · stats={stats}")
+    geo_info = "off"
+    if stream.geo is not None:
+        geo_info = f"on · {stream.geo.route.total_m/1000:.1f} km"
+    print(f"MJPEG → http://{host}:{port}/ · Features={len(stream.route.features)} · Geo={geo_info}")
     return server
 
 
 def pipe_to_ffmpeg(stream, output="pipe:1", extra_args=None):
     import subprocess
-
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "image2pipe",
-        "-framerate",
-        str(stream.cfg.fps),
-        "-i",
-        "-",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-preset",
-        "ultrafast",
-        "-tune",
-        "zerolatency",
+        "ffmpeg", "-y", "-f", "image2pipe", "-framerate", str(stream.cfg.fps),
+        "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast", "-tune", "zerolatency",
     ]
     if extra_args:
         cmd.extend(extra_args)
