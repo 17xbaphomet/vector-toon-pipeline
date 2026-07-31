@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="400" height="480" viewBox="0 0 400 480">
   <rect x="192" y="160" width="16" height="200" fill="#ECEFF1" stroke="#90A4AE" stroke-width="1"/>
   <circle cx="200" cy="160" r="12" fill="#B0BEC5"/>
-  <g transform="translate(200,160)"><ellipse cx="0" cy="-55" rx="8" ry="55" fill="#ECEFF1" stroke="#90A4AE" stroke-width="1"/><ellipse cx="48" cy="28" rx="8" ry="55" fill="#ECEFF1" stroke="#90A4AE" stroke-width="1" transform="rotate(120)"/><ellipse cx="-48" cy="28" rx="8" ry="55" fill="#ECEFF1" stroke="#90A4AE" stroke-width="1" transform="rotate(240)"/></g>
+  <g transform="translate(200,160) scale(-1,1)"><ellipse cx="0" cy="-55" rx="8" ry="55" fill="#ECEFF1" stroke="#90A4AE" stroke-width="1"/><ellipse cx="48" cy="28" rx="8" ry="55" fill="#ECEFF1" stroke="#90A4AE" stroke-width="1" transform="rotate(120)"/><ellipse cx="-48" cy="28" rx="8" ry="55" fill="#ECEFF1" stroke="#90A4AE" stroke-width="1" transform="rotate(240)"/></g>
 </svg>
