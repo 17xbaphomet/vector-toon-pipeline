@@ -1,8 +1,8 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
 Sky projection smoothly follows route heading.
-Road/ground layer bends via vertical offset along screen-X;
-mid/features stay straight; walk position unchanged.
+Road bends only while path heading changes (look-ahead curvature).
+When walking constant direction again the road settles fully straight.
 """
 from __future__ import annotations
 
@@ -142,10 +142,19 @@ class ContinuousWalkStream:
         cur_m = self._world_to_geo_m(body_x)
         lon, lat, heading = self.geo.route.sample(cur_m)
         self._view_az_target = heading
+        # Road bend follows instantaneous path curvature only:
+        # Δheading over a short look-ahead. When heading is constant again → 0.
         try:
-            ahead_m = (cur_m + 120.0) % max(1.0, self.geo.route.total_m)
+            look_m = 80.0
+            total = max(1.0, float(self.geo.route.total_m))
+            ahead_m = (cur_m + look_m) % total
             _, _, heading_ahead = self.geo.route.sample(ahead_m)
-            self._curve_target = self._angle_diff(heading, heading_ahead) / 120.0
+            d_deg = self._angle_diff(heading, heading_ahead)
+            # deadband: < ~2.5° over look-ahead counts as straight
+            if abs(d_deg) < 2.5:
+                self._curve_target = 0.0
+            else:
+                self._curve_target = d_deg / look_m  # deg per meter
         except Exception:
             self._curve_target = 0.0
         from domain.geo.context import GeoSample as GS
@@ -160,8 +169,16 @@ class ContinuousWalkStream:
     def _smooth_view(self, dt: float) -> None:
         a = 1.0 - math.exp(-dt / 1.0)
         self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
-        ac = 1.0 - math.exp(-dt / 0.7)
-        self._curve += (self._curve_target - self._curve) * ac
+        # bend only while turning; settle hard to 0 once the path is straight
+        if abs(self._curve_target) < 1e-6:
+            # fast decay toward fully straight
+            ac = 1.0 - math.exp(-dt / 0.25)
+            self._curve += (0.0 - self._curve) * ac
+            if abs(self._curve) < 0.0004:
+                self._curve = 0.0
+        else:
+            ac = 1.0 - math.exp(-dt / 0.55)
+            self._curve += (self._curve_target - self._curve) * ac
 
     def _geo_mood_at(self, world_x):
         return self._geo_mood
