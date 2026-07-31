@@ -1,9 +1,8 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
-Sky view is always aimed 90° LEFT of map heading (ideal_view = heading - 90).
-Deviation from that 90° offset drives both sky shift and road bend:
-  right curve (offset > 90° left) → sky migrates LEFT, road bends DOWN
-  left curve  (offset < 90° left) → sky migrates RIGHT, road bends UP
+Sky view ideal = heading−90° (90° left of walk). While turning, BOTH road bend
+and sky rotation rate are driven by the same κ (deg/m): ω_sky = κ·v.
+No independent azimuth chase during turns (prevents sun flicker).
 """
 from __future__ import annotations
 
@@ -97,8 +96,9 @@ class ContinuousWalkStream:
         self._last_sky_img = None
         self.geo = None
         self._geo_sample = None
-        self._view_az = 180.0
-        self._view_az_target = 180.0
+        self._view_az = 90.0          # will be set to heading-90 on first sample
+        self._view_az_target = 90.0
+        self._heading_s = 180.0       # smoothed map heading
         self._curve = 0.0
         self._curve_target = 0.0
         self._turning = False
@@ -142,22 +142,28 @@ class ContinuousWalkStream:
         if self.geo is None:
             return
         cur_m = self._world_to_geo_m(body_x)
-        lon, lat, heading = self.geo.route.sample(cur_m)
-        # Ideal sky view: always 90° LEFT of map walking direction
+        lon, lat, heading_raw = self.geo.route.sample(cur_m)
+        # smooth heading to kill polyline noise that made the sun flicker
+        a_h = 0.35
+        self._heading_s = self._angle_lerp(self._heading_s, heading_raw, a_h)
+        heading = self._heading_s
+        # ideal sky view always 90° LEFT of walk direction
         self._view_az_target = (heading - 90.0) % 360.0
         try:
-            look_m = 80.0
+            look_m = 100.0
             total = max(1.0, float(self.geo.route.total_m))
-            ahead_m = (cur_m + look_m) % total
-            _, _, heading_ahead = self.geo.route.sample(ahead_m)
-            # signed heading change along path (deg): >0 = right turn, <0 = left
-            d_deg = self._angle_diff(heading, heading_ahead)
-            if abs(d_deg) < 2.5:
+            # average look-ahead over two distances to reduce sign flips
+            d_acc = 0.0
+            for lm in (look_m * 0.6, look_m, look_m * 1.4):
+                ahead_m = (cur_m + lm) % total
+                _, _, ha = self.geo.route.sample(ahead_m)
+                d_acc += self._angle_diff(heading_raw, ha) / lm
+            d_per_m = d_acc / 3.0
+            if abs(d_per_m) * look_m < 2.5:  # deadband in degrees over look_m
                 self._curve_target = 0.0
                 self._turning = False
             else:
-                # kappa in deg/m; same sign as d_deg (right positive)
-                self._curve_target = d_deg / look_m
+                self._curve_target = d_per_m  # deg/m, >0 right, <0 left
                 self._turning = True
         except Exception:
             self._curve_target = 0.0
@@ -172,32 +178,32 @@ class ContinuousWalkStream:
         )
 
     def _smooth_view(self, dt: float) -> None:
-        """Restore view to heading-90; road bend locked to the same turn signal.
+        """One κ drives road bend amplitude AND sky rotation rate.
 
-        ideal_view = heading - 90° (always look 90° left of walk direction).
-        While turning, κ tracks path curvature; view lerps toward ideal at the
-        same time constant so sky motion and road bend stay in lockstep.
-        When κ→0 both settle: road straight, view holds at ideal.
+        While turning:  d(view_az)/dt = κ · v   (deg/s)  — same κ as road warp.
+        No independent absolute-azimuth chase while κ≠0 (that caused the sun
+        to flicker against a steadily bent road).
+        When κ≈0: gently settle view to ideal (heading−90) and hold.
         """
-        # shared κ (deg/m): >0 right turn, <0 left turn
         if abs(self._curve_target) >= 1e-6 or bool(getattr(self, "_turning", False)):
-            a = 1.0 - math.exp(-dt / 0.45)
+            a = 1.0 - math.exp(-dt / 0.4)
             self._curve += (self._curve_target - self._curve) * a
         else:
-            a = 1.0 - math.exp(-dt / 0.25)
+            a = 1.0 - math.exp(-dt / 0.22)
             self._curve += (0.0 - self._curve) * a
-            if abs(self._curve) < 0.0004:
+            if abs(self._curve) < 0.00035:
                 self._curve = 0.0
 
-        # sky: always chase ideal_view = heading - 90 (stored in _view_az_target)
-        # same τ while turning so rate matches road amplitude profile
-        if abs(self._curve) >= 0.0004:
-            a = 1.0 - math.exp(-dt / 0.45)
-            self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
+        if abs(self._curve) >= 0.00035:
+            v = float(self.cfg.walk_speed_mps or 1.4)
+            # κ>0 right turn → view_az increases → sky content moves LEFT
+            # κ<0 left turn  → view_az decreases → sky content moves RIGHT
+            self._view_az = (self._view_az + self._curve * v * dt) % 360.0
         else:
+            # straighten: lock view back to ideal heading−90
             d_az = abs(self._angle_diff(self._view_az, self._view_az_target))
-            if d_az > 0.2:
-                a = 1.0 - math.exp(-dt / 0.3)
+            if d_az > 0.15:
+                a = 1.0 - math.exp(-dt / 0.35)
                 self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
             else:
                 self._view_az = self._view_az_target
@@ -289,7 +295,7 @@ class ContinuousWalkStream:
             try:
                 s = self.geo.sample(dist, fetch_live=True)
                 self._geo_sample = s
-                self._view_az_target = (s.heading_deg - 90.0) % 360.0
+                # do NOT touch _view_az_target here — heading is owned by _update_heading
                 self._geo_mood = mood_from_name(s.mood_name)
             except Exception:
                 pass
@@ -493,7 +499,7 @@ class ContinuousWalkStream:
             temp = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
             if layer.repeat_x:
                 iw = img.size[0]
-                if iw <= 0:
+            if iw <= 0:
                     return canvas
                 x = (int(ox) % iw) - iw
                 while x < w + iw:
@@ -573,9 +579,8 @@ class ContinuousWalkStream:
                 time.sleep(sleep)
             state = self._compose_state(t)
             body_x = self._scroll_speed * t
+            self._update_heading(body_x)
             self._smooth_view(dt)
-            if frame_i % 6 == 0:
-                self._update_heading(body_x)
             if frame_i % max(1, int(self.cfg.fps * 2)) == 0:
                 self._fetch_geo_async(body_x)
             self.route.ensure_ahead(body_x, look_ahead=12000.0)
