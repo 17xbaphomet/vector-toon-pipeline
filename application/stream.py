@@ -3,8 +3,8 @@
 Loop every frame:
   1. map heading
   2. ideal_view = heading - 90
-  3. road bend = clamp(error to ideal)
-  4. sky rotates at speed proportional to road bend value
+  3. front road bend = clamp(error); back road = same curve delayed 4 s
+  4. sky rotates from curve delayed 3 s (speed ∝ bend)
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import io
 import math
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -101,9 +102,14 @@ class ContinuousWalkStream:
         self._view_az = 90.0
         self._view_az_target = 90.0
         self._heading_s = 180.0
-        self._curve = 0.0
+        self._curve = 0.0          # front (ahead) bend — immediate
+        self._curve_sky = 0.0      # sky, delayed 3 s
+        self._curve_back = 0.0     # rear (left edge), delayed 4 s
         self._curve_target = 0.0
         self._turning = False
+        # ring buffer: ~5 s of curve samples at stream fps
+        self._curve_hist = deque(maxlen=200)
+        self._curve_hist_t = deque(maxlen=200)
         self._geo_mood = RegionMood.OFFENLAND
         self._geo_fetching = False
         self._last_geo_fetch = 0.0
@@ -158,8 +164,25 @@ class ContinuousWalkStream:
             landuse=prev.landuse if prev else None,
         )
 
+    def _curve_at_delay(self, delay_s: float) -> float:
+        """Return curve value from `delay_s` seconds ago (0 if history too short)."""
+        if not self._curve_hist_t:
+            return 0.0
+        target = time.perf_counter() - delay_s
+        best = 0.0
+        for t, c in zip(self._curve_hist_t, self._curve_hist):
+            if t <= target:
+                best = c
+            else:
+                break
+        return best
+
     def _smooth_view(self, dt: float) -> None:
-        """Steps 3+4 of the turn loop."""
+        """Steps 3+4 with delays:
+          front road = immediate
+          sky        = 3 s lag
+          back road  = 4 s lag
+        """
         error = self._angle_diff(self._view_az, self._view_az_target)
 
         MAX_BEND = 1.0
@@ -173,16 +196,21 @@ class ContinuousWalkStream:
         if abs(self._curve) < 0.02:
             self._curve = 0.0
 
+        now = time.perf_counter()
+        self._curve_hist.append(self._curve)
+        self._curve_hist_t.append(now)
+
+        self._curve_sky = self._curve_at_delay(3.0)
+        self._curve_back = self._curve_at_delay(4.0)
+
         OMEGA_SCALE = 30.0
-        if abs(self._curve) >= 0.02:
-            self._view_az = (self._view_az + self._curve * OMEGA_SCALE * dt) % 360.0
+        if abs(self._curve_sky) >= 0.02:
+            self._view_az = (self._view_az + self._curve_sky * OMEGA_SCALE * dt) % 360.0
             new_err = self._angle_diff(self._view_az, self._view_az_target)
             if error * new_err < 0:
                 self._view_az = self._view_az_target
-                self._curve = 0.0
-        else:
+        elif abs(self._curve) < 0.02 and abs(self._curve_sky) < 0.02:
             self._view_az = self._view_az_target
-            self._curve = 0.0
 
     def _geo_mood_at(self, world_x):
         return self._geo_mood
@@ -424,9 +452,12 @@ class ContinuousWalkStream:
         return abs(float(getattr(layer, "parallax", 0.0)) - 1.0) < 0.05
 
     def _warp_road_layer(self, layer_img):
-        """Bend road: +kappa -> UP (sign matches sky)."""
-        kappa = self._curve
-        if abs(kappa) < 0.02:
+        """Bend road: front (ahead) uses immediate kappa, back (left) uses 4s-delayed kappa.
+        +kappa → UP.
+        """
+        kf = self._curve
+        kb = self._curve_back
+        if abs(kf) < 0.02 and abs(kb) < 0.02:
             return layer_img
         try:
             import numpy as np
@@ -436,20 +467,20 @@ class ContinuousWalkStream:
             layer_img = layer_img.convert("RGBA")
         arr = np.asarray(layer_img)
         h, w = arr.shape[:2]
-        max_dy = float(max(-28.0, min(28.0, kappa * 28.0)))
-        if abs(max_dy) < 0.8:
-            return layer_img
+        max_dy_f = float(max(-28.0, min(28.0, kf * 28.0)))
+        max_dy_b = float(max(-28.0, min(28.0, kb * 28.0)))
         cx = float(self._char_sx)
         facing = 1.0 if self.cfg.facing >= 0 else -1.0
         out = np.zeros_like(arr)
         xs = np.arange(w, dtype=np.float32)
         along = (xs - cx) * facing
         half = max(1.0, w * 0.5)
-        t = along / half
-        ahead = np.clip(t, 0.0, None)
-        behind = np.clip(-t, 0.0, None) * 0.25
-        weight = ahead * ahead + behind * behind
-        dy = (max_dy * weight).astype(np.int32)
+        t = along / half  # >0 ahead, <0 behind
+        ahead_w = np.clip(t, 0.0, None)
+        behind_w = np.clip(-t, 0.0, None)
+        af = ahead_w * ahead_w
+        bf = behind_w * behind_w
+        dy = (max_dy_f * af + max_dy_b * bf).astype(np.int32)
         for x in range(w):
             d = int(dy[x])
             if d == 0:
@@ -469,7 +500,7 @@ class ContinuousWalkStream:
         if canvas.mode != "RGBA":
             canvas = canvas.convert("RGBA")
         w = canvas.size[0]
-        bend = self._is_road_layer(layer) and abs(self._curve) >= 0.02
+        bend = self._is_road_layer(layer) and (abs(self._curve) >= 0.02 or abs(self._curve_back) >= 0.02)
         if bend:
             temp = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
             if layer.repeat_x:
