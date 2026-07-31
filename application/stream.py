@@ -1,12 +1,12 @@
-"""Stream: organic features + GeoContext climate + heading sky.
+"""Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
-Visual walk cycle stays cartoon-paced; geo distance advances at walk_speed_mps.
-Network (weather/OSM) never blocks the frame loop.
-Yellow Ortsschilder: Zeichen 310 (Eingang) / 311 (Ausgang, durchgestrichen).
+Place signs (Zeichen 310/311) are placed at official municipal enter/exit
+along the geo route (BKG VG250), not at procedural region edges.
 """
 from __future__ import annotations
 
 import io
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -101,6 +101,8 @@ class ContinuousWalkStream:
         self._geo_fetching = False
         self._last_geo_fetch = 0.0
         self._place_cache = {}
+        self._boundary_segments = []
+        self._boundary_lock = threading.Lock()
         if self.cfg.use_geo:
             try:
                 gr = geo_route or (geo.route if geo else demo_route_frankfurt_heidelberg())
@@ -112,6 +114,7 @@ class ContinuousWalkStream:
                 self.route.mood_provider = self._geo_mood_at
                 self.route.place_name_provider = self._place_name_at
                 self._update_heading(0.0)
+                self._start_boundary_preload(gr)
             except Exception as exc:
                 print(f"Geo disabled ({exc})")
                 self.geo = None
@@ -146,14 +149,77 @@ class ContinuousWalkStream:
         if key in self._place_cache:
             return self._place_cache[key]
         try:
-            from domain.geo.places import reverse_place_name
             lon, lat, _ = self.geo.route.sample(self._world_to_geo_m(world_x))
-            name = reverse_place_name(lat, lon)
+            try:
+                from domain.geo.boundaries import gemeinde_name
+                name = gemeinde_name(lon, lat)
+            except Exception:
+                name = None
+            if not name:
+                from domain.geo.places import reverse_place_name
+                name = reverse_place_name(lat, lon)
             if name:
                 self._place_cache[key] = name
             return name
         except Exception:
             return None
+
+    def _start_boundary_preload(self, gr) -> None:
+        def worker():
+            try:
+                from domain.geo.boundaries import ATTRIBUTION_SHORT, segments_along_route
+                samples = []
+                step = 400.0
+                d = 0.0
+                total = max(1.0, float(gr.total_m))
+                while d <= total:
+                    lon, lat, _ = gr.sample(d)
+                    samples.append((lon, lat, d))
+                    d += step
+                segs = segments_along_route(samples, min_length_m=1500.0, timeout=20.0)
+                with self._boundary_lock:
+                    self._boundary_segments = segs
+                print(
+                    f"Ortsschilder: {len(segs)} Gemeinde-Abschnitte (VG250) · {ATTRIBUTION_SHORT}"
+                )
+            except Exception as exc:
+                print(f"Boundary preload skipped ({exc})")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _geo_m_to_screen_x(self, target_m: float, cur_m: float) -> float:
+        total = 0.0
+        if self.geo is not None:
+            total = float(self.geo.route.total_m)
+        dm = target_m - cur_m
+        if total > 1.0 and abs(dm) > total * 0.5:
+            dm -= math.copysign(total, dm)
+        w2m = self.cfg.world_to_meters or 0.0105
+        world_delta = dm / max(w2m, 1e-9)
+        return self._char_sx + world_delta * self.cfg.facing
+
+    def _draw_boundary_signs(self, canvas, body_x):
+        if self.geo is None:
+            return canvas
+        with self._boundary_lock:
+            segs = list(self._boundary_segments)
+        if not segs:
+            return canvas
+        cur_m = self._world_to_geo_m(body_x)
+        margin_m = 2000.0
+        total = float(self.geo.route.total_m) or 1e18
+        for seg in segs:
+            for mark_m, is_exit in ((seg.enter_m, False), (seg.exit_m, True)):
+                dm = mark_m - cur_m
+                if total > 1.0 and abs(dm) > total * 0.5:
+                    dm -= math.copysign(total, dm)
+                if abs(dm) > margin_m:
+                    continue
+                sx = self._geo_m_to_screen_x(mark_m, cur_m)
+                canvas = self._draw_ortsschild(
+                    canvas, seg.name, sx, self._char_sy, exit_sign=is_exit
+                )
+        return canvas
 
     def _fetch_geo_async(self, body_x):
         if self.geo is None or self._geo_fetching or not self.cfg.geo_live:
@@ -347,7 +413,6 @@ class ContinuousWalkStream:
         ]
 
     def _draw_ortsschild(self, img, text, screen_x, ground_y, *, exit_sign=False):
-        """StVO Zeichen 310 (Eingang) / 311 (Ausgang, durchgestrichen)."""
         try:
             from domain.signs import draw_ortsschild as _draw
             return _draw(img, text, screen_x, ground_y, exit_sign=exit_sign)
@@ -417,21 +482,7 @@ class ContinuousWalkStream:
             while bi < len(base_layers):
                 canvas = self._blit_tiled_layer(canvas, base_layers[bi], state)
                 bi += 1
-            for reg in self.route.active_regions(body_x, margin=900):
-                if not reg.sign_text:
-                    continue
-                sx_in = self._world_to_screen_x(
-                    getattr(reg, "entrance_world_x", reg.sign_world_x), body_x, parallax=1.0
-                )
-                canvas = self._draw_ortsschild(
-                    canvas, reg.sign_text, sx_in, self._char_sy, exit_sign=False
-                )
-                sx_out = self._world_to_screen_x(
-                    getattr(reg, "exit_world_x", reg.end + 20.0), body_x, parallax=1.0
-                )
-                canvas = self._draw_ortsschild(
-                    canvas, reg.sign_text, sx_out, self._char_sy, exit_sign=True
-                )
+            canvas = self._draw_boundary_signs(canvas, body_x)
             char = self.renderer.render_character(
                 state, self.rig, (self.cfg.width, self.cfg.height)
             )
@@ -497,10 +548,17 @@ def run_mjpeg_server(stream, host="0.0.0.0", port=8765):
             f"on · {stream.geo.route.total_m/1000:.1f} km · "
             f"{stream.cfg.walk_speed_mps:.1f} m/s"
         )
+    try:
+        from domain.geo.boundaries import ATTRIBUTION_SHORT
+        attr = ATTRIBUTION_SHORT
+    except Exception:
+        attr = ""
     print(
         f"MJPEG → http://{host}:{port}/ · "
         f"Features={len(stream.route.features)} · Geo={geo_info}"
     )
+    if attr:
+        print(f"  Daten: {attr}")
     return server
 
 
