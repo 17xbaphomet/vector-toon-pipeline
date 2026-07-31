@@ -1,7 +1,9 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
-Road bend amplitude and sky shift rate are strictly coupled via one kappa.
-Left turn: sky RIGHT + road UP; right turn: opposite. kappa=0 → both hold.
+Sky view is always aimed 90° LEFT of map heading (ideal_view = heading - 90).
+Deviation from that 90° offset drives both sky shift and road bend:
+  right curve (offset > 90° left) → sky migrates LEFT, road bends DOWN
+  left curve  (offset < 90° left) → sky migrates RIGHT, road bends UP
 """
 from __future__ import annotations
 
@@ -141,17 +143,20 @@ class ContinuousWalkStream:
             return
         cur_m = self._world_to_geo_m(body_x)
         lon, lat, heading = self.geo.route.sample(cur_m)
-        self._view_az_target = heading
+        # Ideal sky view: always 90° LEFT of map walking direction
+        self._view_az_target = (heading - 90.0) % 360.0
         try:
             look_m = 80.0
             total = max(1.0, float(self.geo.route.total_m))
             ahead_m = (cur_m + look_m) % total
             _, _, heading_ahead = self.geo.route.sample(ahead_m)
+            # signed heading change along path (deg): >0 = right turn, <0 = left
             d_deg = self._angle_diff(heading, heading_ahead)
             if abs(d_deg) < 2.5:
                 self._curve_target = 0.0
                 self._turning = False
             else:
+                # kappa in deg/m; same sign as d_deg (right positive)
                 self._curve_target = d_deg / look_m
                 self._turning = True
         except Exception:
@@ -167,13 +172,14 @@ class ContinuousWalkStream:
         )
 
     def _smooth_view(self, dt: float) -> None:
-        """Strict coupling: one kappa drives road bend AND sky rotation rate.
+        """Restore view to heading-90; road bend locked to the same turn signal.
 
-        _curve tracks path curvature (deg/m). Road warp uses _curve directly.
-        Sky azimuth advances at omega = _curve * walk_speed_mps (deg/s), so
-        when the road is bent the sky shifts proportionally; when kappa→0 both
-        settle together. Residual heading snap only after kappa is zero.
+        ideal_view = heading - 90° (always look 90° left of walk direction).
+        While turning, κ tracks path curvature; view lerps toward ideal at the
+        same time constant so sky motion and road bend stay in lockstep.
+        When κ→0 both settle: road straight, view holds at ideal.
         """
+        # shared κ (deg/m): >0 right turn, <0 left turn
         if abs(self._curve_target) >= 1e-6 or bool(getattr(self, "_turning", False)):
             a = 1.0 - math.exp(-dt / 0.45)
             self._curve += (self._curve_target - self._curve) * a
@@ -183,12 +189,11 @@ class ContinuousWalkStream:
             if abs(self._curve) < 0.0004:
                 self._curve = 0.0
 
+        # sky: always chase ideal_view = heading - 90 (stored in _view_az_target)
+        # same τ while turning so rate matches road amplitude profile
         if abs(self._curve) >= 0.0004:
-            v = float(self.cfg.walk_speed_mps or 1.4)
-            omega = self._curve * v  # deg/s
-            self._view_az = (self._view_az + omega * dt) % 360.0
-            pull = 1.0 - math.exp(-dt / 2.0)
-            self._view_az = self._angle_lerp(self._view_az, self._view_az_target, pull * 0.35)
+            a = 1.0 - math.exp(-dt / 0.45)
+            self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
         else:
             d_az = abs(self._angle_diff(self._view_az, self._view_az_target))
             if d_az > 0.2:
@@ -284,7 +289,7 @@ class ContinuousWalkStream:
             try:
                 s = self.geo.sample(dist, fetch_live=True)
                 self._geo_sample = s
-                self._view_az_target = s.heading_deg
+                self._view_az_target = (s.heading_deg - 90.0) % 360.0
                 self._geo_mood = mood_from_name(s.mood_name)
             except Exception:
                 pass
@@ -438,7 +443,7 @@ class ContinuousWalkStream:
         return abs(float(getattr(layer, "parallax", 0.0)) - 1.0) < 0.05
 
     def _warp_road_layer(self, layer_img):
-        """Bend road: left turn → UP, right turn → DOWN (matches sky shift)."""
+        """Bend road from κ: left (κ<0) → UP, right (κ>0) → DOWN; same κ as sky."""
         kappa = self._curve
         if abs(kappa) < 0.0005:
             return layer_img
