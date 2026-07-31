@@ -1,7 +1,7 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
 Sky projection smoothly follows route heading.
-Road/ground layer alone is bent from look-ahead curvature;
+Road/ground layer bends via vertical offset along screen-X;
 mid/features stay straight; walk position unchanged.
 """
 from __future__ import annotations
@@ -404,7 +404,12 @@ class ContinuousWalkStream:
         return abs(float(getattr(layer, "parallax", 0.0)) - 1.0) < 0.05
 
     def _warp_road_layer(self, layer_img):
-        """Bend only the road/ground layer; scenery is never touched."""
+        """Bend the road path in-plane: vertical offset along screen-X.
+
+        Previous version sheared columns horizontally (wrong axis). Here each
+        column is shifted in Y so the road ribbon curves at the frame edges /
+        ahead of the walker. Scenery layers are never passed through this.
+        """
         kappa = self._curve
         if abs(kappa) < 0.0005:
             return layer_img
@@ -416,26 +421,28 @@ class ContinuousWalkStream:
             layer_img = layer_img.convert("RGBA")
         arr = np.asarray(layer_img)
         h, w = arr.shape[:2]
-        alpha = arr[..., 3]
-        rows = np.where(alpha.max(axis=1) > 8)[0]
-        if rows.size == 0:
-            return layer_img
-        y0, y1 = int(rows[0]), int(rows[-1]) + 1
-        max_shift = float(max(-40.0, min(40.0, kappa * 200.0)))
-        if abs(max_shift) < 0.8:
+        max_dy = float(max(-28.0, min(28.0, kappa * 160.0)))
+        if abs(max_dy) < 0.8:
             return layer_img
         cx = float(self._char_sx)
-        out = arr.copy()
+        facing = 1.0 if self.cfg.facing >= 0 else -1.0
+        out = np.zeros_like(arr)
         xs = np.arange(w, dtype=np.float32)
-        nx = (xs - cx) / max(1.0, w * 0.5)
-        edge = nx * np.abs(nx)
-        span = max(1.0, float(y1 - y0 - 1))
-        for yi in range(y0, y1):
-            depth = 1.0 - (yi - y0) / span
-            depth = depth * depth
-            shift = (max_shift * depth * edge).astype(np.int32)
-            src = np.clip(xs.astype(np.int32) - shift, 0, w - 1)
-            out[yi, np.arange(w)] = arr[yi, src]
+        along = (xs - cx) * facing
+        half = max(1.0, w * 0.5)
+        t = along / half
+        ahead = np.clip(t, 0.0, None)
+        behind = np.clip(-t, 0.0, None) * 0.25
+        weight = ahead * ahead + behind * behind
+        dy = (max_dy * weight).astype(np.int32)
+        for x in range(w):
+            d = int(dy[x])
+            if d == 0:
+                out[:, x] = arr[:, x]
+                continue
+            src_y = np.arange(h, dtype=np.int32) - d
+            valid = (src_y >= 0) & (src_y < h)
+            out[valid, x] = arr[src_y[valid], x]
         return Image.fromarray(out, "RGBA")
 
     def _blit_tiled_layer(self, canvas, layer, state):
