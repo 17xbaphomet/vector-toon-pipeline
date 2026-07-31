@@ -2,9 +2,9 @@
 
 Loop every frame:
   1. map heading
-  2. ideal_view = heading(cur + 3s) - 90   ← map orientation 3 s ahead
-  3. front road bend = clamp(error); back road = same curve delayed 4 s
-  4. sky rotates from curve delayed 3 s (speed ∝ bend)
+  2. ideal_view = heading(cur + 3s) - 90
+  3. view_az approaches ideal DIRECTLY (no delayed feedback)
+  4. road front = f(error); road back = same delayed 4 s
 """
 from __future__ import annotations
 
@@ -103,11 +103,10 @@ class ContinuousWalkStream:
         self._view_az_target = 90.0
         self._heading_s = 180.0
         self._curve = 0.0          # front (ahead) bend — immediate
-        self._curve_sky = 0.0      # sky, delayed 3 s
+        self._curve_sky = 0.0      # kept for debug; not used for control
         self._curve_back = 0.0     # rear (left edge), delayed 4 s
         self._curve_target = 0.0
         self._turning = False
-        # ring buffer: ~5 s of curve samples at stream fps
         self._curve_hist = deque(maxlen=200)
         self._curve_hist_t = deque(maxlen=200)
         self._geo_mood = RegionMood.OFFENLAND
@@ -147,9 +146,9 @@ class ContinuousWalkStream:
         return (a + ContinuousWalkStream._angle_diff(a, b) * t) % 360.0
 
     def _update_heading(self, body_x):
-        """Step 1+2: ideal sky view from map heading 3 s ahead (not current).
+        """ideal = heading 3 s ahead on map − 90°.
 
-        Delays (sky 3 s, back-road 4 s) stay in _smooth_view unchanged.
+        Delays only affect road visuals (back bend 4 s), not sky control.
         """
         if self.geo is None:
             return
@@ -157,7 +156,6 @@ class ContinuousWalkStream:
         lon, lat, heading_raw = self.geo.route.sample(cur_m)
         self._heading_s = self._angle_lerp(self._heading_s, heading_raw, 0.4)
         heading = self._heading_s
-        # comparison value = orientation on the map in 3 seconds
         total = max(1.0, float(self.geo.route.total_m))
         look_m = float(self.cfg.walk_speed_mps or 1.4) * 3.0
         ahead_m = (cur_m + look_m) % total
@@ -189,20 +187,28 @@ class ContinuousWalkStream:
         return best
 
     def _smooth_view(self, dt: float) -> None:
-        """Steps 3+4 with delays:
-          front road = immediate
-          sky        = 3 s lag
-          back road  = 4 s lag
+        """No delayed feedback on sky (kills oscillation).
+
+        view_az approaches ideal DIRECTLY.
+        curve = f(error) drives road front immediately, back delayed 4 s.
         """
         error = self._angle_diff(self._view_az, self._view_az_target)
 
+        # --- sky: direct approach (undelayed) ---
+        if abs(error) > 0.1:
+            a = 1.0 - math.exp(-dt / 1.2)
+            self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
+        else:
+            self._view_az = self._view_az_target
+
+        # --- road bend from current error (visual only) ---
         MAX_BEND = 1.0
         raw = error / 15.0
         target_curve = max(-MAX_BEND, min(MAX_BEND, raw))
         if abs(target_curve) < 0.04:
             target_curve = 0.0
 
-        a = 1.0 - math.exp(-dt / 0.2)
+        a = 1.0 - math.exp(-dt / 0.25)
         self._curve += (target_curve - self._curve) * a
         if abs(self._curve) < 0.02:
             self._curve = 0.0
@@ -211,17 +217,8 @@ class ContinuousWalkStream:
         self._curve_hist.append(self._curve)
         self._curve_hist_t.append(now)
 
-        self._curve_sky = self._curve_at_delay(3.0)
+        self._curve_sky = self._curve_at_delay(3.0)  # debug only
         self._curve_back = self._curve_at_delay(4.0)
-
-        OMEGA_SCALE = 30.0
-        if abs(self._curve_sky) >= 0.02:
-            self._view_az = (self._view_az + self._curve_sky * OMEGA_SCALE * dt) % 360.0
-            new_err = self._angle_diff(self._view_az, self._view_az_target)
-            if error * new_err < 0:
-                self._view_az = self._view_az_target
-        elif abs(self._curve) < 0.02 and abs(self._curve_sky) < 0.02:
-            self._view_az = self._view_az_target
 
     def _geo_mood_at(self, world_x):
         return self._geo_mood
@@ -463,9 +460,7 @@ class ContinuousWalkStream:
         return abs(float(getattr(layer, "parallax", 0.0)) - 1.0) < 0.05
 
     def _warp_road_layer(self, layer_img):
-        """Bend road: front (ahead) uses immediate kappa, back (left) uses 4s-delayed kappa.
-        +kappa → UP.
-        """
+        """Bend road: front (ahead) immediate kappa, back (left) 4s-delayed kappa."""
         kf = self._curve
         kb = self._curve_back
         if abs(kf) < 0.02 and abs(kb) < 0.02:
@@ -486,7 +481,7 @@ class ContinuousWalkStream:
         xs = np.arange(w, dtype=np.float32)
         along = (xs - cx) * facing
         half = max(1.0, w * 0.5)
-        t = along / half  # >0 ahead, <0 behind
+        t = along / half
         ahead_w = np.clip(t, 0.0, None)
         behind_w = np.clip(-t, 0.0, None)
         af = ahead_w * ahead_w
