@@ -42,6 +42,17 @@ _moon_cache: LRU = LRU(24)          # phase_bucket → moon sprite
 _sky_cache: LRU = LRU(16)           # (w, h, top, bot) → sky image
 
 
+def trim_alpha(img: Image.Image, threshold: int = 8) -> Image.Image:
+    """Crop to non-transparent content so the visual bottom sits on the ground."""
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    mask = img.getchannel("A").point(lambda a: 255 if a > threshold else 0)
+    bbox = mask.getbbox()
+    if bbox is None:
+        return img
+    return img.crop(bbox)
+
+
 def props_key(props) -> tuple:
     if props is None:
         return ()
@@ -87,21 +98,43 @@ def get_variant_rgba(path: Path, props, svg_to_pil, apply_props) -> Image.Image:
 def get_sized_rgba(
     path: Path, props, w: int, h: int, svg_to_pil, apply_props
 ) -> Image.Image:
-    # quantize dimensions to reduce cache fragmentation
+    """Scale feature to target width, preserve aspect, trim transparent padding.
+
+    Returned height may be less than `h` — caller must bottom-align to ground.
+    """
+    w = max(1, int(w))
+    h = max(1, int(h))
     wq = max(1, (w // 4) * 4)
-    hq = max(1, (h // 4) * 4)
     pk = props_key(props)
-    key = (str(path), pk, wq, hq)
+    key = (str(path), pk, wq, "trim_v1")
     hit = _size_cache.get(key)
     if hit is not None:
-        if hit.size == (w, h):
+        if hit.size[0] == w:
             return hit
-        return hit.resize((w, h), Image.Resampling.BILINEAR)
+        scale = w / hit.size[0]
+        nh = max(1, int(round(hit.size[1] * scale)))
+        return hit.resize((w, nh), Image.Resampling.BILINEAR)
+
     art = get_variant_rgba(path, props, svg_to_pil, apply_props)
-    sized = art.resize((wq, hq), Image.Resampling.BILINEAR)
+    art = trim_alpha(art)
+    ow, oh = art.size
+    if ow < 1 or oh < 1:
+        empty = Image.new("RGBA", (w, 1), (0, 0, 0, 0))
+        _size_cache.put(key, empty)
+        return empty
+
+    scale = wq / ow
+    nh = max(1, int(round(oh * scale)))
+    nw = wq
+    if nh > h:
+        scale = h / oh
+        nw = max(1, int(round(ow * scale)))
+        nh = h
+    sized = art.resize((nw, nh), Image.Resampling.BILINEAR)
     _size_cache.put(key, sized)
-    if (wq, hq) != (w, h):
-        return sized.resize((w, h), Image.Resampling.BILINEAR)
+    if nw != w:
+        scale = w / nw
+        return sized.resize((w, max(1, int(round(nh * scale)))), Image.Resampling.BILINEAR)
     return sized
 
 
@@ -112,9 +145,7 @@ def get_sky(w: int, h: int, top: tuple, bot: tuple) -> Image.Image:
         return hit.copy()
     import numpy as np
 
-    # vectorized vertical gradient
     t = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
-    # two-segment like original: 0..0.55 top→bot, 0.55..1 darken bot
     mid = 0.55
     u1 = np.clip(t / mid, 0, 1)
     r = top[0] + (bot[0] - top[0]) * u1
@@ -126,7 +157,6 @@ def get_sky(w: int, h: int, top: tuple, bot: tuple) -> Image.Image:
     g = np.where(mask2, bot[1] * (1 - 0.15 * u2), g)
     b = np.where(mask2, bot[2] * (1 - 0.15 * u2), b)
     arr = np.stack([r, g, b], axis=-1).astype(np.uint8)
-    # broadcast to width
     arr = np.repeat(arr, w, axis=1)
     img = Image.fromarray(arr, "RGB").convert("RGBA")
     _sky_cache.put(key, img)
@@ -147,7 +177,6 @@ def get_moon_sprite(phase: float, radius: int = 22) -> Image.Image:
     pa = (bucket / 32.0) * 2.0 * math.pi
     moon_img = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
     cx, cy = r + 1, r + 1
-    # faster: only iterate bounding box, use putpixel still but cached
     pixels = moon_img.load()
     for py in range(r * 2 + 2):
         dy = py - cy

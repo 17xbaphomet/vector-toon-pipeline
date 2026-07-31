@@ -46,7 +46,7 @@ _SCALE_RANGE = (0.75, 1.30)
 _HUE_RANGE = (-0.12, 0.12)
 _SAT_RANGE = (0.75, 1.20)
 _BRIGHT_RANGE = (0.88, 1.12)
-_Y_JITTER = (-8.0, 12.0)
+_Y_JITTER = (0.0, 6.0)  # never lift above ground plane
 
 _STYLE_COUNT: dict[str, int] = {
     "haus": 4, "bauernhof": 3, "baum": 4, "busch": 3, "felsen": 3,
