@@ -1,7 +1,8 @@
 """Stream: organic features + GeoContext + VG250 Gemeinde Ortsschilder.
 
-Place signs (Zeichen 310/311) are placed at official municipal enter/exit
-along the geo route (BKG VG250), not at procedural region edges.
+Place signs (Zeichen 310/311) at VG250 Gemeinde enter/exit.
+Sky projection smoothly follows route heading; road bends at frame edges
+without morphing the walked world position.
 """
 from __future__ import annotations
 
@@ -96,7 +97,10 @@ class ContinuousWalkStream:
         self._last_sky_img = None
         self.geo = None
         self._geo_sample = None
-        self._view_az = 180.0
+        self._view_az = 180.0          # smoothed (sky projection)
+        self._view_az_target = 180.0   # raw route heading
+        self._curve = 0.0              # smoothed road curvature (deg/m)
+        self._curve_target = 0.0
         self._geo_mood = RegionMood.OFFENLAND
         self._geo_fetching = False
         self._last_geo_fetch = 0.0
@@ -125,19 +129,78 @@ class ContinuousWalkStream:
             return body_x * w2m
         return (body_x * w2m) % max(1.0, self.geo.route.total_m)
 
+    @staticmethod
+    def _angle_diff(a: float, b: float) -> float:
+        """Shortest signed delta a→b in degrees (−180..180)."""
+        return ((b - a + 540.0) % 360.0) - 180.0
+
+    @staticmethod
+    def _angle_lerp(a: float, b: float, t: float) -> float:
+        return (a + ContinuousWalkStream._angle_diff(a, b) * t) % 360.0
+
     def _update_heading(self, body_x):
         if self.geo is None:
             return
-        lon, lat, heading = self.geo.route.sample(self._world_to_geo_m(body_x))
-        self._view_az = heading
+        cur_m = self._world_to_geo_m(body_x)
+        lon, lat, heading = self.geo.route.sample(cur_m)
+        # Target only — smooth shift happens every frame via _smooth_view
+        self._view_az_target = heading
+        # Look-ahead curvature for road bend (does not affect walk position)
+        try:
+            ahead_m = (cur_m + 120.0) % max(1.0, self.geo.route.total_m)
+            _, _, heading_ahead = self.geo.route.sample(ahead_m)
+            self._curve_target = self._angle_diff(heading, heading_ahead) / 120.0
+        except Exception:
+            self._curve_target = 0.0
         from domain.geo.context import GeoSample as GS
         prev = self._geo_sample
         self._geo_sample = GS(
-            distance_m=self._world_to_geo_m(body_x), lon=lon, lat=lat, heading_deg=heading,
-            elevation_m=self.geo.route.elevation_at(self._world_to_geo_m(body_x)),
+            distance_m=cur_m, lon=lon, lat=lat, heading_deg=heading,
+            elevation_m=self.geo.route.elevation_at(cur_m),
             weather=prev.weather if prev else None,
             landuse=prev.landuse if prev else None,
         )
+
+    def _smooth_view(self, dt: float) -> None:
+        """Exponential smooth of sky heading + road curvature."""
+        a = 1.0 - math.exp(-dt / 1.0)
+        self._view_az = self._angle_lerp(self._view_az, self._view_az_target, a)
+        ac = 1.0 - math.exp(-dt / 0.7)
+        self._curve += (self._curve_target - self._curve) * ac
+
+    def _apply_road_edge_bend(self, canvas):
+        """Bend ground near frame edges by curvature; keep feet/center stable.
+
+        Walk position (body_x / character) is never moved — pure screen-space
+        remap of the lower band, strongest at horizon & outer thirds.
+        """
+        kappa = self._curve
+        if abs(kappa) < 0.0004 or self.geo is None:
+            return canvas
+        try:
+            import numpy as np
+        except ImportError:
+            return canvas
+        if canvas.mode != "RGBA":
+            canvas = canvas.convert("RGBA")
+        arr = np.asarray(canvas)
+        h, w = arr.shape[:2]
+        y0 = int(h * 0.58)
+        max_shift = float(max(-32.0, min(32.0, kappa * 140.0)))
+        if abs(max_shift) < 0.5:
+            return canvas
+        cx = float(self._char_sx)
+        out = arr.copy()
+        xs = np.arange(w, dtype=np.float32)
+        nx = (xs - cx) / max(1.0, w * 0.5)
+        edge = nx * np.abs(nx)
+        for yi in range(y0, h):
+            depth = 1.0 - (yi - y0) / max(1.0, float(h - y0))
+            depth = depth * depth
+            shift = (max_shift * depth * edge).astype(np.int32)
+            src = np.clip(xs.astype(np.int32) - shift, 0, w - 1)
+            out[yi, np.arange(w)] = arr[yi, src]
+        return Image.fromarray(out, "RGBA")
 
     def _geo_mood_at(self, world_x):
         return self._geo_mood
@@ -235,7 +298,7 @@ class ContinuousWalkStream:
             try:
                 s = self.geo.sample(dist, fetch_live=True)
                 self._geo_sample = s
-                self._view_az = s.heading_deg
+                self._view_az_target = s.heading_deg
                 self._geo_mood = mood_from_name(s.mood_name)
             except Exception:
                 pass
@@ -460,6 +523,7 @@ class ContinuousWalkStream:
                 time.sleep(sleep)
             state = self._compose_state(t)
             body_x = self._scroll_speed * t
+            self._smooth_view(dt)
             if frame_i % 6 == 0:
                 self._update_heading(body_x)
             if frame_i % max(1, int(self.cfg.fps * 2)) == 0:
@@ -482,6 +546,7 @@ class ContinuousWalkStream:
             while bi < len(base_layers):
                 canvas = self._blit_tiled_layer(canvas, base_layers[bi], state)
                 bi += 1
+            canvas = self._apply_road_edge_bend(canvas)
             canvas = self._draw_boundary_signs(canvas, body_x)
             char = self.renderer.render_character(
                 state, self.rig, (self.cfg.width, self.cfg.height)
