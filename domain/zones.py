@@ -1,12 +1,8 @@
-"""Organic infinite landscape: tagged features + combinable props, forever.
+"""Organic infinite landscape with stable real-map Ortsschilder.
 
-Optional geo mood provider biases soft regions from real density climate
-(no exact object placement).
-
-Ortsschilder use only real place names from the map (place_name_provider);
-never synthetic placeholders.
+Ortsschilder: only real place names; consecutive same-name regions form one
+stretch with a single Eingang + Ausgang (MIN_PLACE_STRETCH / MIN_PLACE_GAP).
 """
-
 from __future__ import annotations
 
 import random
@@ -164,6 +160,9 @@ MOOD_GAP: dict[RegionMood, tuple[float, float]] = {
     RegionMood.WALD: (150, 450),
 }
 
+MIN_PLACE_STRETCH = 4500.0
+MIN_PLACE_GAP = 3000.0
+
 
 @dataclass(frozen=True, slots=True)
 class Feature:
@@ -193,11 +192,6 @@ class Feature:
 
 @dataclass(frozen=True, slots=True)
 class Region:
-    """Settlement / forest stretch with German-style entrance + exit signs.
-
-    sign_text is only set when a real map place name is known.
-    """
-
     mood: RegionMood
     start: float
     width: float
@@ -209,7 +203,6 @@ class Region:
 
     @property
     def sign_world_x(self) -> float:
-        """Ortseingang (Zeichen 310) — just before the settlement."""
         return self.start - 40.0
 
     @property
@@ -218,7 +211,6 @@ class Region:
 
     @property
     def exit_world_x(self) -> float:
-        """Ortsausgang (Zeichen 311) — just after the settlement."""
         return self.end + 20.0
 
 
@@ -258,7 +250,7 @@ def _pick_depth(rng: random.Random, kind: FeatureKind) -> Depth:
 def _pick_mood(rng: random.Random) -> RegionMood:
     return rng.choices(
         [RegionMood.OFFENLAND, RegionMood.DORF, RegionMood.STADT, RegionMood.WALD],
-        weights=[3.0, 1.4, 0.9, 1.2], k=1,
+        weights=[4.5, 0.9, 0.5, 1.0], k=1,
     )[0]
 
 
@@ -270,16 +262,15 @@ def mood_from_name(name: str) -> RegionMood:
 
 
 def _make_region(rng: random.Random, x: float, mood: RegionMood | None = None) -> Region:
-    """Build a region. sign_text stays empty until a real map name is resolved."""
     mood = mood or _pick_mood(rng)
     if mood == RegionMood.OFFENLAND:
-        width = rng.uniform(4000, 9000)
+        width = rng.uniform(5000, 12000)
     elif mood == RegionMood.WALD:
-        width = rng.uniform(2500, 5500)
+        width = rng.uniform(3500, 7000)
     elif mood == RegionMood.DORF:
-        width = rng.uniform(1800, 3500)
+        width = rng.uniform(5000, 9000)
     else:
-        width = rng.uniform(2200, 4500)
+        width = rng.uniform(6000, 11000)
     return Region(mood=mood, start=x, width=width, sign_text="")
 
 
@@ -291,7 +282,6 @@ class LandscapeRoute:
     features_root: Path = field(default_factory=lambda: Path("assets/backgrounds/features"))
     seed: int | None = None
     mood_provider: Callable[[float], RegionMood | None] | None = None
-    # Optional: world_x → real place name (from map / Nominatim)
     place_name_provider: Callable[[float], str | None] | None = None
     _region_end: float = 0.0
     _feature_x: float = 200.0
@@ -332,10 +322,23 @@ class LandscapeRoute:
             forced = None
             if self.mood_provider is not None:
                 forced = self.mood_provider(self._region_end)
+            if self.regions and forced is not None:
+                prev = self.regions[-1]
+                if (
+                    prev.mood in (RegionMood.DORF, RegionMood.STADT)
+                    and forced != prev.mood
+                    and (self._region_end - prev.start) < MIN_PLACE_STRETCH
+                ):
+                    forced = prev.mood
+                if (
+                    prev.mood in (RegionMood.DORF, RegionMood.STADT)
+                    and forced in (RegionMood.DORF, RegionMood.STADT)
+                    and prev.sign_text
+                ):
+                    forced = RegionMood.OFFENLAND
             reg = _make_region(self._rng, self._region_end, mood=forced)
-            # Only real map names — never synthetic placeholders
             if (
-                reg.mood != RegionMood.OFFENLAND
+                reg.mood in (RegionMood.DORF, RegionMood.STADT)
                 and self.place_name_provider is not None
             ):
                 real = self.place_name_provider(reg.start)
@@ -347,13 +350,12 @@ class LandscapeRoute:
             self._region_end = reg.end
 
     def resolve_place_names(self) -> None:
-        """Fill missing sign_text from the map provider (real names only)."""
         if self.place_name_provider is None:
             return
         updated: list[Region] = []
         changed = False
         for reg in self.regions:
-            if reg.mood == RegionMood.OFFENLAND or reg.sign_text:
+            if reg.mood not in (RegionMood.DORF, RegionMood.STADT) or reg.sign_text:
                 updated.append(reg)
                 continue
             real = self.place_name_provider(reg.start)
@@ -366,6 +368,41 @@ class LandscapeRoute:
                 updated.append(reg)
         if changed:
             self.regions = updated
+
+    def place_sign_events(
+        self, distance: float, margin: float = 2000.0
+    ) -> list[tuple[float, str, bool]]:
+        """One Eingang + one Ausgang per merged place stretch."""
+        self.ensure_ahead(distance)
+        named = [
+            r for r in self.regions
+            if r.sign_text
+            and r.mood in (RegionMood.DORF, RegionMood.STADT)
+            and (r.start - margin * 2) <= distance <= (r.end + margin * 2)
+        ]
+        if not named:
+            return []
+        named.sort(key=lambda r: r.start)
+        stretches: list[tuple[str, float, float]] = []
+        for r in named:
+            if stretches and stretches[-1][0] == r.sign_text:
+                n, s, e = stretches[-1]
+                stretches[-1] = (n, s, max(e, r.end))
+            else:
+                stretches.append((r.sign_text, r.start, r.end))
+        events: list[tuple[float, str, bool]] = []
+        prev_exit = -1e18
+        for name, start, end in stretches:
+            if (end - start) < MIN_PLACE_STRETCH:
+                continue
+            enter_x = start - 40.0
+            exit_x = end + 20.0
+            if enter_x - prev_exit < MIN_PLACE_GAP:
+                continue
+            events.append((enter_x, name, False))
+            events.append((exit_x, name, True))
+            prev_exit = exit_x
+        return events
 
     def _extend_features(self, until: float) -> None:
         while self._feature_x < until:
