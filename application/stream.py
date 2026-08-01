@@ -482,17 +482,27 @@ class ContinuousWalkStream:
                     if px[bx, by][3] >= 250:
                         lowest = by
                         break
-                start = int(sh * 0.55) if lowest < 0 else lowest + 1
-                for by in range(start, sh):
+                if lowest < 0:
+                    continue
+                for by in range(lowest + 1, sh):
                     if px[bx, by][3] < 250:
                         px[bx, by] = ground
             pad_w = max(sw, panel_w)
             pad_x = int(left + (panel_w - pad_w) * 0.5)
             building_bottom = y + sh
             gap_h = max(0, ground_y - building_bottom)
-            pad_h = max(12, int(sh * 0.14)) + gap_h
-            pad = Image.new("RGBA", (pad_w, pad_h), ground)
-            canvas.alpha_composite(pad, (pad_x, building_bottom - max(12, int(sh * 0.14))))
+            base_pad = max(12, int(sh * 0.14))
+            pad_h = base_pad + gap_h
+            xs = [bx for bx in range(sw) if any(px[bx, by][3] >= 250 for by in range(max(0, sh - 8), sh))]
+            pad = Image.new("RGBA", (pad_w, pad_h), (0, 0, 0, 0))
+            if xs:
+                x0 = xs[0] + (pad_w - sw) // 2
+                x1 = xs[-1] + (pad_w - sw) // 2
+                strip = Image.new("RGBA", (max(1, x1 - x0 + 1), pad_h), ground)
+                pad.paste(strip, (max(0, x0), 0))
+            else:
+                pad = Image.new("RGBA", (pad_w, pad_h), ground)
+            canvas.alpha_composite(pad, (pad_x, building_bottom - base_pad))
         canvas.alpha_composite(scaled, (x, y))
         return canvas
 
