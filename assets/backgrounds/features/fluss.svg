@@ -1,10 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="100" viewBox="0 0 900 100">
-  <!-- Wide river/lake strip for mid/far background — opaque water band -->
-  <path d="M0,55 Q80,40 160,58 T320,50 T480,60 T640,48 T800,55 T900,52 L900,100 L0,100 Z" fill="#1B6B63"/>
-  <path d="M0,62 Q100,50 200,65 T400,58 T600,68 T800,60 T900,64 L900,100 L0,100 Z" fill="#2E8B7A"/>
-  <path d="M0,72 Q120,62 240,75 T480,70 T720,78 T900,74 L900,100 L0,100 Z" fill="#3D9B8A"/>
-  <!-- Soft highlights -->
-  <path d="M60,68 Q140,60 220,70" fill="none" stroke="#5EC4B0" stroke-width="2" opacity="0.5"/>
-  <path d="M400,72 Q500,64 600,74" fill="none" stroke="#5EC4B0" stroke-width="2" opacity="0.4"/>
-  <path d="M700,76 Q780,68 860,78" fill="none" stroke="#5EC4B0" stroke-width="2" opacity="0.35"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100" viewBox="0 0 400 100">
+  <!-- Seamless river tile — edge-to-edge opaque water band -->
+  <rect x="0" y="40" width="400" height="60" fill="#1B6B63"/>
+  <path d="M0,48 Q50,38 100,50 T200,45 T300,52 T400,48 L400,100 L0,100 Z" fill="#2E8B7A"/>
+  <path d="M0,60 Q60,52 120,62 T240,58 T360,64 T400,60 L400,100 L0,100 Z" fill="#3D9B8A"/>
+  <path d="M30,58 Q90,50 150,60" fill="none" stroke="#5EC4B0" stroke-width="2" opacity="0.45"/>
+  <path d="M220,62 Q280,54 340,64" fill="none" stroke="#5EC4B0" stroke-width="2" opacity="0.35"/>
 </svg>

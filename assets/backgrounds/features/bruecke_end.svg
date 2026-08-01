@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160" viewBox="0 0 200 160">
+  <!-- Bridge END abutment -->
+  <rect x="0" y="130" width="200" height="30" fill="#1B6B63"/>
+  <rect x="0" y="136" width="200" height="24" fill="#2E8B7A"/>
+  <rect x="154" y="70" width="36" height="70" rx="2" fill="#607D8B"/>
+  <rect x="154" y="70" width="36" height="12" fill="#78909C"/>
+  <rect x="0" y="78" width="160" height="22" rx="2" fill="#90A4AE"/>
+  <rect x="0" y="72" width="160" height="10" rx="1" fill="#B0BEC5"/>
+  <path d="M10,72 L10,52 L150,52 L150,72" fill="none" stroke="#546E7A" stroke-width="4"/>
+  <path d="M40,72 L40,52 M80,72 L80,52 M120,72 L120,52" stroke="#546E7A" stroke-width="3"/>
+  <path d="M40,115 Q100,135 154,110" fill="none" stroke="#607D8B" stroke-width="5"/>
+</svg>

@@ -1,7 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="600" height="90" viewBox="0 0 600 90">
-  <!-- Lake blob for far/mid left of road -->
-  <ellipse cx="300" cy="58" rx="280" ry="28" fill="#1B6B63"/>
-  <ellipse cx="300" cy="54" rx="220" ry="20" fill="#2E8B7A"/>
-  <ellipse cx="280" cy="50" rx="120" ry="12" fill="#3D9B8A"/>
-  <ellipse cx="340" cy="52" rx="60" ry="6" fill="#5EC4B0" opacity="0.35"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="90" viewBox="0 0 400 90">
+  <!-- Continuous lake strip (not isolated puddle) -->
+  <rect x="0" y="35" width="400" height="55" fill="#1B6B63"/>
+  <path d="M0,42 Q60,32 120,44 T240,40 T360,46 T400,42 L400,90 L0,90 Z" fill="#2E8B7A"/>
+  <path d="M0,55 Q80,48 160,58 T320,54 T400,56 L400,90 L0,90 Z" fill="#3D9B8A"/>
+  <ellipse cx="120" cy="50" rx="40" ry="5" fill="#5EC4B0" opacity="0.3"/>
+  <ellipse cx="280" cy="52" rx="50" ry="4" fill="#5EC4B0" opacity="0.25"/>
 </svg>

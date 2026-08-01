@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160" viewBox="0 0 200 160">
+  <!-- Bridge MID span — seamless deck + pier -->
+  <rect x="0" y="130" width="200" height="30" fill="#1B6B63"/>
+  <rect x="0" y="136" width="200" height="24" fill="#2E8B7A"/>
+  <rect x="86" y="95" width="28" height="50" rx="2" fill="#78909C"/>
+  <rect x="0" y="78" width="200" height="22" fill="#90A4AE"/>
+  <rect x="0" y="72" width="200" height="10" fill="#B0BEC5"/>
+  <path d="M0,52 L200,52" fill="none" stroke="#546E7A" stroke-width="4"/>
+  <path d="M0,72 L0,52 M40,72 L40,52 M80,72 L80,52 M120,72 L120,52 M160,72 L160,52 M200,72 L200,52" stroke="#546E7A" stroke-width="3"/>
+  <path d="M20,115 Q100,140 180,115" fill="none" stroke="#607D8B" stroke-width="5"/>
+</svg>

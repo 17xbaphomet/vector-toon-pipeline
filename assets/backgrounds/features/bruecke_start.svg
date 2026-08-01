@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="160" viewBox="0 0 200 160">
+  <!-- Bridge START abutment + first pier -->
+  <rect x="0" y="130" width="200" height="30" fill="#1B6B63"/>
+  <rect x="0" y="136" width="200" height="24" fill="#2E8B7A"/>
+  <rect x="10" y="70" width="36" height="70" rx="2" fill="#607D8B"/>
+  <rect x="10" y="70" width="36" height="12" fill="#78909C"/>
+  <rect x="40" y="78" width="160" height="22" rx="2" fill="#90A4AE"/>
+  <rect x="40" y="72" width="160" height="10" rx="1" fill="#B0BEC5"/>
+  <path d="M50,72 L50,52 L190,52 L190,72" fill="none" stroke="#546E7A" stroke-width="4"/>
+  <path d="M80,72 L80,52 M120,72 L120,52 M160,72 L160,52" stroke="#546E7A" stroke-width="3"/>
+  <path d="M46,110 Q100,135 160,115" fill="none" stroke="#607D8B" stroke-width="5"/>
+</svg>
