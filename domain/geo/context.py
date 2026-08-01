@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 
 from .landuse import LanduseSample, fetch_osm_landuse
+from .water import WaterClimate, fetch_water_climate
 from .route import GeoRoute
 from .weather import WeatherSnapshot, fetch_elevations, fetch_weather
 
@@ -15,10 +15,11 @@ class GeoSample:
     distance_m: float
     lon: float
     lat: float
-    heading_deg: float       # clockwise from north — walking direction
+    heading_deg: float
     elevation_m: float
     weather: WeatherSnapshot | None
     landuse: LanduseSample | None
+    water: WaterClimate | None = None
 
     @property
     def mood_name(self) -> str:
@@ -29,8 +30,6 @@ class GeoSample:
 
 @dataclass
 class GeoContext:
-    """Caches weather/landuse along a route; samples by distance."""
-
     route: GeoRoute
     weather_refresh_m: float = 2000.0
     landuse_refresh_m: float = 600.0
@@ -42,39 +41,29 @@ class GeoContext:
         if self._elev_loaded or not self.route.points:
             return
         coords: list[tuple[float, float]] = []
-        indices: list[int] = []
         d = 0.0
         while d <= self.route.total_m:
             lon, lat, _ = self.route.sample(d)
             coords.append((lat, lon))
-            indices.append(len(coords) - 1)
             d += step_m
         try:
             elevs = fetch_elevations(coords)
         except Exception:
             elevs = [0.0] * len(coords)
-        # stamp nearest route points
-        for pt in self.route.points:
-            idx = min(int(pt.distance_m / step_m), len(elevs) - 1)
-            object.__setattr__(pt, "elev_m", elevs[idx])  # RoutePoint is frozen — rebuild if needed
-        # RoutePoint is frozen: rebuild points list
         from .route import RoutePoint
-
         new_pts = []
         for pt in self.route.points:
             idx = min(int(pt.distance_m / step_m), len(elevs) - 1)
-            new_pts.append(
-                RoutePoint(lon=pt.lon, lat=pt.lat, distance_m=pt.distance_m, elev_m=elevs[idx])
-            )
+            new_pts.append(RoutePoint(lon=pt.lon, lat=pt.lat, distance_m=pt.distance_m, elev_m=elevs[idx]))
         self.route.points = new_pts
         self._elev_loaded = True
 
     def sample(self, distance_m: float, *, fetch_live: bool = True) -> GeoSample:
         lon, lat, heading = self.route.sample(distance_m)
         elev = self.route.elevation_at(distance_m)
-
         weather = None
         landuse = None
+        water = None
         if fetch_live:
             w_key = int(distance_m // self.weather_refresh_m)
             if w_key not in self._weather_cache:
@@ -83,7 +72,6 @@ class GeoContext:
                 except Exception:
                     pass
             weather = self._weather_cache.get(w_key)
-
             l_key = int(distance_m // self.landuse_refresh_m)
             if l_key not in self._landuse_cache:
                 try:
@@ -91,13 +79,15 @@ class GeoContext:
                 except Exception:
                     pass
             landuse = self._landuse_cache.get(l_key)
-
+            if not hasattr(self, "_water_cache"):
+                self._water_cache = {}
+            if l_key not in self._water_cache:
+                try:
+                    self._water_cache[l_key] = fetch_water_climate(lat, lon, heading, radius_m=280.0)
+                except Exception:
+                    self._water_cache[l_key] = WaterClimate()
+            water = self._water_cache.get(l_key)
         return GeoSample(
-            distance_m=distance_m,
-            lon=lon,
-            lat=lat,
-            heading_deg=heading,
-            elevation_m=elev,
-            weather=weather,
-            landuse=landuse,
+            distance_m=distance_m, lon=lon, lat=lat, heading_deg=heading,
+            elevation_m=elev, weather=weather, landuse=landuse, water=water,
         )
