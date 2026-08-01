@@ -459,9 +459,21 @@ class ContinuousWalkStream:
         if canvas.mode != "RGBA":
             canvas = canvas.convert("RGBA")
         if is_building and sw > 4 and sh > 4:
-            pad_h = max(6, int(sh * 0.10))
-            pad = Image.new("RGBA", (sw, pad_h), (90, 120, 70, 255))
-            canvas.alpha_composite(pad, (x, y + sh - pad_h))
+            ground = (90, 120, 70, 255)
+            if "industrie" in path_l or "lagerhalle" in path_l:
+                ground = (100, 110, 120, 255)
+            band = max(8, int(sh * 0.18))
+            px = scaled.load()
+            for by in range(sh - band, sh):
+                for bx in range(sw):
+                    r, g, b, a = px[bx, by]
+                    if a < 250:
+                        px[bx, by] = ground
+            pad_w = max(sw, panel_w)
+            pad_h = max(10, int(sh * 0.12))
+            pad = Image.new("RGBA", (pad_w, pad_h), ground)
+            pad_x = int(left + (panel_w - pad_w) * 0.5)
+            canvas.alpha_composite(pad, (pad_x, y + sh - pad_h))
         canvas.alpha_composite(scaled, (x, y))
         return canvas
 
