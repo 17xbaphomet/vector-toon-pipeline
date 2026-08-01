@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="160" viewBox="0 0 520 160">
+  <!-- Cartoon road bridge over water — bottom-aligned on road plane -->
+  <!-- Water under bridge -->
+  <ellipse cx="260" cy="140" rx="200" ry="18" fill="#2E7D6F"/>
+  <ellipse cx="260" cy="136" rx="150" ry="12" fill="#3D9B8A"/>
+  <!-- Stone piers -->
+  <rect x="120" y="90" width="28" height="55" rx="3" fill="#78909C"/>
+  <rect x="372" y="90" width="28" height="55" rx="3" fill="#78909C"/>
+  <!-- Deck -->
+  <rect x="40" y="78" width="440" height="22" rx="3" fill="#90A4AE"/>
+  <rect x="40" y="72" width="440" height="10" rx="2" fill="#B0BEC5"/>
+  <!-- Railings -->
+  <path d="M50,72 L50,52 L470,52 L470,72" fill="none" stroke="#546E7A" stroke-width="4"/>
+  <path d="M90,72 L90,52 M150,72 L150,52 M210,72 L210,52 M270,72 L270,52 M330,72 L330,52 M390,72 L390,52 M450,72 L450,52" stroke="#546E7A" stroke-width="3"/>
+  <!-- Arch hint -->
+  <path d="M148,110 Q260,145 372,110" fill="none" stroke="#607D8B" stroke-width="6"/>
+</svg>
